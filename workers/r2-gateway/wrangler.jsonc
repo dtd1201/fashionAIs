@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fashionais-r2-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-02",
+  "r2_buckets": [
+    {
+      "binding": "ASSETS_BUCKET",
+      "bucket_name": "fashionais-assets"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:3000"
+  }
+}

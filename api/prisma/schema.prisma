@@ -1,0 +1,373 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum AssetKind {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  OTHER
+}
+
+enum AssetStatus {
+  PENDING_UPLOAD
+  READY
+  FAILED
+  DELETED
+}
+
+enum AssetStorageProvider {
+  R2
+}
+
+enum GenerationType {
+  VIRTUAL_TRY_ON
+  MODEL_GENERATION
+  PHOTOSHOOT
+  IMAGE_GENERATION
+  IMAGE_EDITING
+  VIDEO_GENERATION
+}
+
+enum GenerationStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCEL_REQUESTED
+  CANCELLED
+}
+
+enum GenerationAssetRole {
+  PERSON
+  GARMENT
+  REFERENCE
+  SOURCE
+  MASK
+}
+
+enum AIProviderName {
+  MOCK
+  FASHN
+  OPENAI
+  GEMINI
+}
+
+enum AIJobStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum CreditLedgerEntryType {
+  INITIAL_GRANT
+  SUBSCRIPTION_GRANT
+  CREDIT_PURCHASE
+  GENERATION_DEBIT
+  GENERATION_REFUND
+  ADMIN_ADJUSTMENT
+  EXPIRATION
+}
+
+enum BillingCheckoutMode {
+  SUBSCRIPTION
+  PAYMENT
+}
+
+enum BillingCheckoutStatus {
+  CREATED
+  COMPLETED
+  EXPIRED
+  FAILED
+}
+
+enum SubscriptionProvider {
+  STRIPE
+}
+
+enum OrganizationSubscriptionStatus {
+  INACTIVE
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  UNPAID
+}
+
+model User {
+  id            String               @id @default(uuid()) @db.Uuid
+  email         String               @unique
+  displayName   String?
+  passwordHash  String?
+  status        UserStatus           @default(ACTIVE)
+  isSystemAdmin Boolean              @default(false)
+  memberships   OrganizationMember[]
+  sessions      AuthSession[]
+  createdAssets Asset[]
+  generations   Generation[]
+  creditEntries CreditLedgerEntry[]
+  billingCheckoutSessions BillingCheckoutSession[]
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+}
+
+model Organization {
+  id          String               @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String               @unique
+  memberships OrganizationMember[]
+  assets      Asset[]
+  generations Generation[]
+  aiJobs      AIJob[]
+  creditBalance OrganizationCreditBalance?
+  creditEntries CreditLedgerEntry[]
+  billingCustomer BillingCustomer?
+  billingCheckoutSessions BillingCheckoutSession[]
+  subscription OrganizationSubscription?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+}
+
+model BillingCustomer {
+  id               String       @id @default(uuid()) @db.Uuid
+  organizationId   String       @unique @db.Uuid
+  stripeCustomerId String       @unique
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+}
+
+model BillingCheckoutSession {
+  id                      String                @id @default(uuid()) @db.Uuid
+  organizationId          String                @db.Uuid
+  createdByUserId         String                @db.Uuid
+  stripeCheckoutSessionId String?               @unique
+  selectionId             String
+  mode                    BillingCheckoutMode
+  status                  BillingCheckoutStatus @default(CREATED)
+  stripeCustomerId        String?
+  stripeSubscriptionId    String?
+  stripePaymentIntentId   String?
+  amountTotal             Int?
+  currency                String?
+  completedAt             DateTime?
+  organization            Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser           User                  @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  @@index([organizationId, createdAt(sort: Desc)])
+}
+
+model StripeWebhookEvent {
+  id              String    @id @default(uuid()) @db.Uuid
+  stripeEventId   String    @unique
+  type            String
+  processedAt     DateTime?
+  processingError String?
+  createdAt       DateTime  @default(now())
+}
+
+model OrganizationSubscription {
+  id                   String                         @id @default(uuid()) @db.Uuid
+  organizationId       String                         @unique @db.Uuid
+  provider             SubscriptionProvider           @default(STRIPE)
+  stripeSubscriptionId String?                        @unique
+  stripeCustomerId     String?
+  planId               String
+  status               OrganizationSubscriptionStatus @default(INACTIVE)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean                        @default(false)
+  organization         Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt            DateTime                       @default(now())
+  updatedAt            DateTime                       @updatedAt
+}
+
+model Asset {
+  id                String                  @id @default(uuid()) @db.Uuid
+  organizationId    String                  @db.Uuid
+  createdByUserId   String                  @db.Uuid
+  kind              AssetKind
+  status            AssetStatus             @default(PENDING_UPLOAD)
+  storageProvider   AssetStorageProvider    @default(R2)
+  bucket            String
+  objectKey         String                  @unique
+  originalFileName  String
+  mimeType          String
+  fileSize          Int
+  width             Int?
+  height            Int?
+  durationSeconds   Float?
+  checksumSha256    String?
+  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser     User                    @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  readyAt           DateTime?
+  deletedAt         DateTime?
+  generationInputs  GenerationInputAsset[]
+  generationOutputs GenerationOutputAsset[]
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([organizationId, kind, status])
+}
+
+model Generation {
+  id                 String                  @id @default(uuid()) @db.Uuid
+  organizationId     String                  @db.Uuid
+  createdByUserId    String                  @db.Uuid
+  type               GenerationType
+  status             GenerationStatus        @default(QUEUED)
+  parameters         Json                    @default("{}")
+  idempotencyKey     String?
+  requestFingerprint String?
+  errorCode          String?
+  errorMessage       String?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  failedAt           DateTime?
+  cancelledAt        DateTime?
+  creditCost          Int                     @default(0)
+  creditsReservedAt  DateTime?
+  creditsFinalizedAt DateTime?
+  creditsRefundedAt  DateTime?
+  organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser      User                    @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  inputs             GenerationInputAsset[]
+  outputs            GenerationOutputAsset[]
+  aiJob              AIJob?
+  creditEntries      CreditLedgerEntry[]
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  @@unique([organizationId, createdByUserId, idempotencyKey])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([organizationId, type, status])
+}
+
+model OrganizationCreditBalance {
+  organizationId String       @id @db.Uuid
+  balance        Int          @default(0)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedAt      DateTime     @updatedAt
+}
+
+model CreditLedgerEntry {
+  id              String                @id @default(uuid()) @db.Uuid
+  organizationId  String                @db.Uuid
+  type            CreditLedgerEntryType
+  amount          Int
+  balanceAfter    Int
+  generationId    String?               @db.Uuid
+  referenceType   String?
+  referenceId     String?
+  description     String?
+  idempotencyKey  String                @unique
+  createdByUserId String?               @db.Uuid
+  organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  generation      Generation?           @relation(fields: [generationId], references: [id], onDelete: Restrict)
+  createdByUser   User?                 @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdAt       DateTime              @default(now())
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([generationId])
+}
+
+model GenerationInputAsset {
+  id           String              @id @default(uuid()) @db.Uuid
+  generationId String              @db.Uuid
+  assetId      String              @db.Uuid
+  role         GenerationAssetRole
+  generation   Generation          @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  asset        Asset               @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  createdAt    DateTime            @default(now())
+
+  @@unique([generationId, assetId, role])
+  @@index([assetId])
+}
+
+model GenerationOutputAsset {
+  id           String     @id @default(uuid()) @db.Uuid
+  generationId String     @db.Uuid
+  assetId      String     @unique @db.Uuid
+  position     Int
+  generation   Generation @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  asset        Asset      @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  createdAt    DateTime   @default(now())
+
+  @@unique([generationId, position])
+}
+
+model AIJob {
+  id             String         @id @default(uuid()) @db.Uuid
+  generationId   String         @unique @db.Uuid
+  organizationId String         @db.Uuid
+  provider       AIProviderName @default(MOCK)
+  jobType        GenerationType
+  status         AIJobStatus    @default(QUEUED)
+  queueJobId     String?        @unique
+  providerJobId  String?
+  attempt        Int            @default(0)
+  maxAttempts    Int            @default(3)
+  errorCode      String?
+  errorMessage   String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  generation     Generation     @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([organizationId, status])
+}
+
+model OrganizationMember {
+  id             String           @id @default(uuid()) @db.Uuid
+  userId         String           @db.Uuid
+  organizationId String           @db.Uuid
+  role           OrganizationRole @default(MEMBER)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@index([organizationId, role])
+}
+
+model AuthSession {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @db.Uuid
+  refreshTokenHash    String
+  expiresAt           DateTime
+  revokedAt           DateTime?
+  replacedBySessionId String?   @db.Uuid
+  userAgent           String?
+  ipAddress           String?
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([expiresAt])
+}

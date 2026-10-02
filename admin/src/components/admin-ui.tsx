@@ -1,0 +1,8 @@
+import type { ReactNode } from 'react';
+export function AdminHeader({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) { return <header className="border-b border-slate-700 pb-6"><p className="text-[10px] font-bold uppercase tracking-[.24em] text-cyan-300">{eyebrow}</p><h1 className="mt-2 text-3xl font-black tracking-tight md:text-4xl">{title}</h1><p className="mt-2 max-w-3xl text-xs leading-5 text-slate-400">{description}</p></header>; }
+export function Panel({ children, className = '' }: { children: ReactNode; className?: string }) { return <section className={`border border-slate-700 bg-slate-950/70 ${className}`}>{children}</section>; }
+export function Metric({ label, value }: { label: string; value: ReactNode }) { return <Panel className="p-5"><p className="text-[9px] font-bold uppercase tracking-[.18em] text-slate-500">{label}</p><p className="mt-3 text-3xl font-black text-white">{value}</p></Panel>; }
+export function Loading() { return <div className="mt-8 grid gap-3 md:grid-cols-3">{Array.from({ length: 6 }, (_, index) => <div key={index} className="h-28 animate-pulse border border-slate-700 bg-slate-800/50" />)}</div>; }
+export function ErrorState({ message }: { message: string }) { return <p role="alert" className="mt-6 border border-rose-900 bg-rose-950/40 p-4 text-xs text-rose-200">{message}</p>; }
+export function Empty({ children = 'No records found.' }: { children?: ReactNode }) { return <div className="p-10 text-center text-xs text-slate-500">{children}</div>; }
+export const inputClass = 'h-10 rounded-md border border-slate-700 bg-slate-950 px-3 text-xs text-white outline-none focus:border-cyan-300';

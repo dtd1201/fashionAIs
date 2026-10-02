@@ -1,0 +1,14 @@
+node_modules/
+.next/
+dist/
+coverage/
+.turbo/
+*.log
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+!**/.env.example
+fashionAIs/api/prisma/*.db
+fashionAIs/api/prisma/*.db-journal

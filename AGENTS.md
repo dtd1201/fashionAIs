@@ -1,0 +1,48 @@
+# Repository Rules
+
+- Do not change the overall architecture without explicit instruction.
+- `web` is the customer frontend.
+- `admin` is the internal admin frontend.
+- `api` is the only backend.
+- Frontends must never directly access the database.
+- Frontends must never directly call private AI providers.
+- Frontends must never contain private API keys.
+- Business logic belongs in the backend.
+- Database access is backend-only.
+- All public APIs must be under `/api/v1`.
+- All API inputs must be validated.
+- Database changes require Prisma migrations.
+- Long-running AI operations must use background jobs.
+- AI provider implementations must use an abstraction layer.
+- Credit logic must support reserve, consume, and refund.
+- Admin authorization must always be enforced by the backend.
+- Authentication and authorization decisions must be enforced by backend guards and services.
+- All organization-scoped business operations require backend membership validation.
+- Frontend organization-role checks are UX only and are never a security boundary.
+- Every organization must retain at least one `OWNER` membership.
+- Every asset belongs to exactly one organization and requires backend membership validation.
+- Browsers never receive storage credentials or choose buckets/object keys.
+- Large asset bytes upload directly to object storage rather than through the API server.
+- Assets become `READY` only after backend storage verification.
+- Long-running generation work must execute in BullMQ workers, never synchronously in HTTP requests.
+- PostgreSQL is authoritative for Generation and AIJob state; queue payloads contain identifiers only.
+- Generation input and output assets must belong to the same organization as the generation.
+- AI providers implement the shared provider abstraction and must not leak into controllers.
+- Generation outputs become Asset records before a generation may become `COMPLETED`.
+- Terminal generation and AI job transitions must be protected against duplicate processing.
+- Never create system administrators through public registration endpoints.
+- Refresh tokens must be rotated and stored only as hashes server-side.
+- Shared types belong in `packages/types`.
+- Shared validation belongs in `packages/validation`.
+- Shared non-secret configuration belongs in `packages/config`.
+- Never log secrets or credentials.
+- Frontends never select real AI providers directly.
+- Persist external provider job IDs immediately and resume them on retries instead of creating duplicate provider jobs.
+- Third-party output URLs are temporary and must be ingested into organization-owned storage.
+- Organization credit ledger entries are append-only and authoritative; cached balances must update atomically with ledger entries.
+- Generation debits and refunds require persistent idempotency keys and may never make an organization balance negative.
+- Never log provider credentials or presigned asset URLs.
+- Never commit real secrets.
+- Prefer small modular changes over large rewrites.
+- Preserve backward compatibility unless explicitly told otherwise.
+- Update documentation when architecture changes.

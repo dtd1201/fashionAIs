@@ -1,0 +1,3 @@
+import assert from 'node:assert/strict'; import test from 'node:test'; import { adminRouteAllowed, friendly, shortId } from './admin';
+test('admin routes require an authenticated system administrator', () => { assert.equal(adminRouteAllowed('authenticated', true), true); assert.equal(adminRouteAllowed('authenticated', false), false); assert.equal(adminRouteAllowed('denied', true), false); });
+test('admin display helpers avoid raw enums and shorten identifiers', () => { assert.equal(friendly('GENERATION_DEBIT'), 'Generation Debit'); assert.equal(shortId('12345678-1234-1234-1234'), '12345678…1234'); });
