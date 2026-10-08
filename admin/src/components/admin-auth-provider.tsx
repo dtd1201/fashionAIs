@@ -2,7 +2,7 @@
 
 import type { AuthTokenResponse, AuthUser, LoginRequest } from '@fashion-ais/types';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AdminApiError, adminApiRequest, createAuthenticatedAdminApiClient } from '@/lib/api/client';
+import { AdminApiError, adminApiRequest, adminAuthSessionCoordinator, createAuthenticatedAdminApiClient } from '@/lib/api/client';
 import { completeAdminSession } from '@/lib/auth/admin-session';
 
 type AdminAuthStatus = 'loading' | 'authenticated' | 'anonymous' | 'denied';
@@ -50,6 +50,7 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       getAccessToken: () => accessTokenRef.current,
       onSession: applyRefreshedSession,
       onAuthFailure: () => clearSession(),
+      refreshSession: adminAuthSessionCoordinator.refresh,
     }),
     [applyRefreshedSession, clearSession],
   );
@@ -64,11 +65,11 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     async function restoreSession(): Promise<void> {
       try {
-        const session = await adminApiRequest<AuthTokenResponse>('/auth/refresh', { method: 'POST' });
+        const session = await adminAuthSessionCoordinator.bootstrap();
         await completeAdminSession({
           session,
           verify: verifyAdmin,
-          logout: () => adminApiRequest('/auth/logout', { method: 'POST' }),
+          logout: () => adminApiRequest('/admin/auth/logout', { method: 'POST' }),
           accept: acceptSession,
           deny: () => clearSession('denied'),
         });
@@ -81,14 +82,14 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
   }, [acceptSession, clearSession, verifyAdmin]);
 
   async function login(input: LoginRequest): Promise<void> {
-    const session = await adminApiRequest<AuthTokenResponse>('/auth/login', {
+    const session = await adminApiRequest<AuthTokenResponse>('/admin/auth/login', {
       method: 'POST',
       body: JSON.stringify(input),
     });
     await completeAdminSession({
       session,
       verify: verifyAdmin,
-      logout: () => adminApiRequest('/auth/logout', { method: 'POST' }),
+      logout: () => adminApiRequest('/admin/auth/logout', { method: 'POST' }),
       accept: acceptSession,
       deny: () => clearSession('denied'),
     });
@@ -96,7 +97,7 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
 
   async function logout(): Promise<void> {
     try {
-      await adminApiRequest<{ loggedOut: true }>('/auth/logout', { method: 'POST' });
+      await adminApiRequest<{ loggedOut: true }>('/admin/auth/logout', { method: 'POST' });
     } finally {
       clearSession();
     }

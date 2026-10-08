@@ -6,5 +6,6 @@ export default registerAs('auth', () => ({
   accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
   refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '30d',
   refreshCookieName: 'fashion_ais_refresh',
+  adminRefreshCookieName: 'fashion_ais_admin_refresh',
   secureCookies: process.env.NODE_ENV === 'production',
 }));

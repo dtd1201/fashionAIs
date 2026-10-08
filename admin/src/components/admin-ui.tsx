@@ -1,8 +1,49 @@
+import { Inbox } from 'lucide-react';
 import type { ReactNode } from 'react';
-export function AdminHeader({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) { return <header className="border-b border-slate-700 pb-6"><p className="text-[10px] font-bold uppercase tracking-[.24em] text-cyan-300">{eyebrow}</p><h1 className="mt-2 text-3xl font-black tracking-tight md:text-4xl">{title}</h1><p className="mt-2 max-w-3xl text-xs leading-5 text-slate-400">{description}</p></header>; }
-export function Panel({ children, className = '' }: { children: ReactNode; className?: string }) { return <section className={`border border-slate-700 bg-slate-950/70 ${className}`}>{children}</section>; }
-export function Metric({ label, value }: { label: string; value: ReactNode }) { return <Panel className="p-5"><p className="text-[9px] font-bold uppercase tracking-[.18em] text-slate-500">{label}</p><p className="mt-3 text-3xl font-black text-white">{value}</p></Panel>; }
-export function Loading() { return <div className="mt-8 grid gap-3 md:grid-cols-3">{Array.from({ length: 6 }, (_, index) => <div key={index} className="h-28 animate-pulse border border-slate-700 bg-slate-800/50" />)}</div>; }
-export function ErrorState({ message }: { message: string }) { return <p role="alert" className="mt-6 border border-rose-900 bg-rose-950/40 p-4 text-xs text-rose-200">{message}</p>; }
-export function Empty({ children = 'No records found.' }: { children?: ReactNode }) { return <div className="p-10 text-center text-xs text-slate-500">{children}</div>; }
-export const inputClass = 'h-10 rounded-md border border-slate-700 bg-slate-950 px-3 text-xs text-white outline-none focus:border-cyan-300';
+
+export function AdminHeader({ title, description, actions }: { title: string; description: string; eyebrow?: string; actions?: ReactNode }) {
+  return <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><h1 className="text-2xl font-semibold tracking-tight text-gray-950 sm:text-3xl">{title}</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-gray-500">{description}</p></div>{actions}</header>;
+}
+
+export function Panel({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return <section className={`rounded-xl border border-gray-200 bg-white shadow-sm shadow-gray-950/[0.02] ${className}`}>{children}</section>;
+}
+
+export function PanelHeader({ title, description }: { title: string; description?: string }) {
+  return <div className="border-b border-gray-100 px-5 py-4"><h2 className="text-sm font-semibold text-gray-900">{title}</h2>{description && <p className="mt-1 text-xs leading-5 text-gray-500">{description}</p>}</div>;
+}
+
+export function Metric({ label, value }: { label: string; value: ReactNode }) {
+  return <Panel className="p-5"><p className="text-sm font-medium text-gray-500">{label}</p><p className="mt-3 text-2xl font-semibold tracking-tight text-gray-950">{value}</p></Panel>;
+}
+
+export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info' }) {
+  const tones = { neutral: 'bg-gray-100 text-gray-700', success: 'bg-emerald-50 text-emerald-700', warning: 'bg-amber-50 text-amber-700', danger: 'bg-red-50 text-red-700', info: 'bg-blue-50 text-blue-700' };
+  return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${tones[tone]}`}>{children}</span>;
+}
+
+export function StatusBadge({ status }: { status: string | null }) {
+  const value = status ?? 'Unknown';
+  const normalized = value.toUpperCase();
+  const tone = ['ACTIVE', 'COMPLETED', 'SUCCEEDED', 'READY', 'OK', 'CONFIGURED'].includes(normalized) ? 'success' : ['FAILED', 'SUSPENDED', 'CANCELLED', 'UNPAID', 'ERROR'].includes(normalized) ? 'danger' : ['PROCESSING', 'QUEUED', 'PENDING', 'PAST_DUE', 'CANCEL_REQUESTED'].includes(normalized) ? 'warning' : 'neutral';
+  return <Badge tone={tone}>{value.replaceAll('_', ' ')}</Badge>;
+}
+
+export function Loading() {
+  return <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Loading"><span className="sr-only">Loading</span>{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-28 animate-pulse rounded-xl border border-gray-200 bg-white" />)}</div>;
+}
+
+export function ErrorState({ message }: { message: string }) {
+  return <div role="alert" className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{message}</div>;
+}
+
+export function Empty({ children = 'No records found.' }: { children?: ReactNode }) {
+  return <div className="flex flex-col items-center justify-center px-6 py-12 text-center"><span className="grid h-10 w-10 place-items-center rounded-full bg-gray-100 text-gray-400"><Inbox size={18} /></span><p className="mt-3 text-sm text-gray-500">{children}</p></div>;
+}
+
+export const inputClass = 'h-10 rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-900 shadow-sm outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15';
+export const tableClass = 'w-full text-left text-sm';
+export const tableHeadClass = 'border-b border-gray-200 bg-gray-50/80 text-xs font-medium text-gray-500';
+export const tableRowClass = 'border-b border-gray-100 transition last:border-0 hover:bg-gray-50/60';
+export const tableCellClass = 'px-5 py-4 align-middle';
+export const linkClass = 'font-medium text-blue-600 hover:text-blue-700 hover:underline';

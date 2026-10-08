@@ -1,42 +1,18 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Post,
-  Req,
-  Res,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Post, Req, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
-import type { AuthTokenResponse, AuthUser } from '@fashion-ais/types';
+import type { AuthTokenResponse } from '@fashion-ais/types';
 import type { Request, Response } from 'express';
-import { AuthService, type AuthSessionResult } from './auth.service';
 import { refreshCookie } from './auth-cookie';
-import { CurrentUser } from './current-user.decorator';
+import { AuthService, type AuthSessionResult } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { RegisterDto } from './dto/register.dto';
-import { JwtAuthGuard } from './jwt-auth.guard';
 
-@Controller('auth')
-export class AuthController {
+@Controller('admin/auth')
+export class AdminAuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly config: ConfigService,
   ) {}
-
-  @Post('register')
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  async register(
-    @Body() dto: RegisterDto,
-    @Req() request: Request,
-    @Res({ passthrough: true }) response: Response,
-  ): Promise<AuthTokenResponse> {
-    return this.finishAuthentication(
-      await this.authService.register(dto, this.requestMetadata(request)),
-      response,
-    );
-  }
 
   @Post('login')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -46,7 +22,7 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<AuthTokenResponse> {
     return this.finishAuthentication(
-      await this.authService.login(dto, this.requestMetadata(request)),
+      await this.authService.loginAdmin(dto, this.requestMetadata(request)),
       response,
     );
   }
@@ -57,10 +33,12 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<AuthTokenResponse> {
+    const cookie = this.cookie();
     return this.finishAuthentication(
       await this.authService.refresh(
-        request.cookies?.[this.cookie().name] as string | undefined,
+        request.cookies?.[cookie.name] as string | undefined,
         this.requestMetadata(request),
+        'admin',
       ),
       response,
     );
@@ -71,18 +49,13 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ loggedOut: true }> {
-    await this.authService.logout(
-      request.cookies?.[this.cookie().name] as string | undefined,
-    );
     const cookie = this.cookie();
+    await this.authService.logout(
+      request.cookies?.[cookie.name] as string | undefined,
+      'admin',
+    );
     response.clearCookie(cookie.name, cookie.options);
     return { loggedOut: true };
-  }
-
-  @Get('me')
-  @UseGuards(JwtAuthGuard)
-  me(@CurrentUser() user: AuthUser): AuthUser {
-    return user;
   }
 
   private finishAuthentication(
@@ -98,7 +71,7 @@ export class AuthController {
   }
 
   private cookie() {
-    return refreshCookie(this.config, 'customer');
+    return refreshCookie(this.config, 'admin');
   }
 
   private requestMetadata(request: Request): {

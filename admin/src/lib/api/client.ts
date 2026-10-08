@@ -8,10 +8,14 @@ export class AdminApiError extends Error {
 }
 
 export async function adminApiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (typeof init.body === 'string' && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
   const response = await fetch(`${env.NEXT_PUBLIC_API_URL}${path}`, {
     ...init,
     credentials: 'include',
-    headers: { 'content-type': 'application/json', ...init.headers },
+    headers,
   });
   const body = (await response.json()) as ApiResponse<T>;
   if (!response.ok || !body.success) {
@@ -24,37 +28,23 @@ interface AuthenticatedAdminClientOptions {
   getAccessToken(): string | null;
   onSession(session: AuthTokenResponse): void;
   onAuthFailure(): void;
+  refreshSession(): Promise<AuthTokenResponse>;
   request?: typeof adminApiRequest;
 }
 
+export interface AdminAuthSessionCoordinator {
+  refresh(): Promise<AuthTokenResponse>;
+  bootstrap(): Promise<AuthTokenResponse>;
+}
+
 const AUTH_LIFECYCLE_PATHS = new Set([
-  '/auth/login',
-  '/auth/register',
-  '/auth/refresh',
-  '/auth/logout',
+  '/admin/auth/login',
+  '/admin/auth/refresh',
+  '/admin/auth/logout',
 ]);
 
 export function createAuthenticatedAdminApiClient(options: AuthenticatedAdminClientOptions) {
   const request = options.request ?? adminApiRequest;
-  let refreshPromise: Promise<string> | null = null;
-
-  async function refreshAccessToken(): Promise<string> {
-    if (!refreshPromise) {
-      refreshPromise = request<AuthTokenResponse>('/auth/refresh', { method: 'POST' })
-        .then((session) => {
-          options.onSession(session);
-          return session.accessToken;
-        })
-        .catch((error: unknown) => {
-          options.onAuthFailure();
-          throw error;
-        })
-        .finally(() => {
-          refreshPromise = null;
-        });
-    }
-    return refreshPromise;
-  }
 
   return async function authenticatedRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
     const attemptedToken = options.getAccessToken();
@@ -71,13 +61,56 @@ export function createAuthenticatedAdminApiClient(options: AuthenticatedAdminCli
       }
 
       const currentToken = options.getAccessToken();
-      const retryToken = currentToken && currentToken !== attemptedToken
+      let retryToken = currentToken && currentToken !== attemptedToken
         ? currentToken
-        : await refreshAccessToken();
-      return request<T>(path, withBearerToken(init, retryToken));
+        : null;
+      if (!retryToken) {
+        try {
+          const session = await options.refreshSession();
+          options.onSession(session);
+          retryToken = session.accessToken;
+        } catch (refreshError) {
+          options.onAuthFailure();
+          throw refreshError;
+        }
+      }
+      try {
+        return await request<T>(path, withBearerToken(init, retryToken));
+      } catch (retryError) {
+        if (retryError instanceof AdminApiError && retryError.status === 401) {
+          options.onAuthFailure();
+        }
+        throw retryError;
+      }
     }
   };
 }
+
+export function createAdminAuthSessionCoordinator(
+  request: typeof adminApiRequest = adminApiRequest,
+): AdminAuthSessionCoordinator {
+  let refreshPromise: Promise<AuthTokenResponse> | null = null;
+
+  function refresh(): Promise<AuthTokenResponse> {
+    if (!refreshPromise) {
+      refreshPromise = request<AuthTokenResponse>('/admin/auth/refresh', {
+        method: 'POST',
+      }).finally(() => {
+        refreshPromise = null;
+      });
+    }
+    return refreshPromise;
+  }
+
+  return {
+    refresh,
+    bootstrap() {
+      return refresh();
+    },
+  };
+}
+
+export const adminAuthSessionCoordinator = createAdminAuthSessionCoordinator();
 
 function withBearerToken(init: RequestInit, token: string | null): RequestInit {
   const headers = new Headers(init.headers);

@@ -13,13 +13,13 @@ const configValues: Record<string, unknown> = {
   'auth.refreshExpiresIn': '30d',
 };
 
-const activeUser = (passwordHash: string): User => ({
+const activeUser = (passwordHash: string, isSystemAdmin = false): User => ({
   id: '11111111-1111-4111-8111-111111111111',
   email: 'owner@example.com',
   displayName: 'Owner',
   passwordHash,
   status: 'ACTIVE',
-  isSystemAdmin: false,
+  isSystemAdmin,
   createdAt: new Date(),
   updatedAt: new Date(),
 });
@@ -134,6 +134,150 @@ describe('AuthService', () => {
     await expect(
       service.login({ email: 'missing@example.com', password: 'wrong-password' }, {}),
     ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'INVALID_CREDENTIALS' }) });
+  });
+
+  it('rejects a non-system-admin account from admin login', async () => {
+    const passwordHash = await argon2.hash('correct-password');
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue(activeUser(passwordHash)) },
+    };
+    const service = new AuthService(prisma as never, jwt, config);
+
+    await expect(
+      service.loginAdmin(
+        { email: 'owner@example.com', password: 'correct-password' },
+        {},
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'INVALID_CREDENTIALS' }),
+    });
+  });
+
+  it('binds customer and admin refresh tokens to separate contexts', async () => {
+    const passwordHash = await argon2.hash('correct-password');
+    const customerUser = activeUser(passwordHash);
+    const adminUser = {
+      ...activeUser(passwordHash, true),
+      id: '22222222-2222-4222-8222-222222222222',
+      email: 'admin@example.com',
+    };
+    const sessions = new Map<string, Record<string, unknown>>();
+    const prisma = {
+      user: {
+        findUnique: jest.fn(({ where }: { where: { email: string } }) =>
+          Promise.resolve(
+            where.email === adminUser.email ? adminUser : customerUser,
+          ),
+        ),
+      },
+      authSession: {
+        create: jest.fn(({
+          data,
+        }: {
+          data: Record<string, unknown> & { id: string; userId: string };
+        }) => {
+          const user = data.userId === adminUser.id ? adminUser : customerUser;
+          sessions.set(data.id, { ...data, revokedAt: null, user });
+          return Promise.resolve(data);
+        }),
+        findUnique: jest.fn(({ where }: { where: { id: string } }) =>
+          Promise.resolve(sessions.get(where.id) ?? null),
+        ),
+      },
+    };
+    const service = new AuthService(prisma as never, jwt, config);
+    const customer = await service.login(
+      { email: customerUser.email, password: 'correct-password' },
+      {},
+    );
+    const admin = await service.loginAdmin(
+      { email: adminUser.email, password: 'correct-password' },
+      {},
+    );
+
+    expect(sessions.size).toBe(2);
+    expect(customer.user.id).toBe(customerUser.id);
+    expect(admin.user.id).toBe(adminUser.id);
+    await expect(service.refresh(customer.refreshToken, {}, 'admin')).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'INVALID_REFRESH_TOKEN' }),
+    });
+    await expect(service.refresh(admin.refreshToken, {}, 'customer')).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'INVALID_REFRESH_TOKEN' }),
+    });
+  });
+
+  it('strictly rotates admin refresh sessions', async () => {
+    const passwordHash = await argon2.hash('correct-password');
+    const user = activeUser(passwordHash, true);
+    let storedSession: {
+      id: string;
+      userId: string;
+      refreshTokenHash: string;
+      expiresAt: Date;
+      revokedAt: Date | null;
+    } | undefined;
+    const transaction = {
+      authSession: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue(user) },
+      authSession: {
+        create: jest.fn(({ data }) => {
+          storedSession = { ...data, revokedAt: null };
+          return Promise.resolve(storedSession);
+        }),
+        findUnique: jest.fn(() =>
+          Promise.resolve(storedSession ? { ...storedSession, user } : null),
+        ),
+      },
+      $transaction: jest.fn((callback: (client: typeof transaction) => unknown) =>
+        callback(transaction),
+      ),
+    };
+    const service = new AuthService(prisma as never, jwt, config);
+    const login = await service.loginAdmin(
+      { email: user.email, password: 'correct-password' },
+      {},
+    );
+
+    await expect(service.refresh(login.refreshToken, {}, 'admin')).resolves.toEqual(
+      expect.objectContaining({ refreshToken: expect.any(String) }),
+    );
+    transaction.authSession.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(service.refresh(login.refreshToken, {}, 'admin')).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'INVALID_REFRESH_TOKEN' }),
+    });
+  });
+
+  it('rejects an admin refresh after system-admin access is revoked', async () => {
+    const passwordHash = await argon2.hash('correct-password');
+    const user = activeUser(passwordHash, true);
+    let storedSession: Record<string, unknown> | undefined;
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue(user) },
+      authSession: {
+        create: jest.fn(({ data }) => {
+          storedSession = { ...data, revokedAt: null };
+          return Promise.resolve(data);
+        }),
+        findUnique: jest.fn(() =>
+          Promise.resolve(storedSession ? { ...storedSession, user } : null),
+        ),
+      },
+    };
+    const service = new AuthService(prisma as never, jwt, config);
+    const login = await service.loginAdmin(
+      { email: user.email, password: 'correct-password' },
+      {},
+    );
+    user.isSystemAdmin = false;
+
+    await expect(service.refresh(login.refreshToken, {}, 'admin')).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'INVALID_REFRESH_TOKEN' }),
+    });
   });
 
   it('rotates a refresh token and revokes the old session', async () => {

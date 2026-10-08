@@ -10,6 +10,6 @@
     }
   ],
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:3000"
+    "ALLOWED_ORIGINS": "http://localhost:3000,https://localhost:8443"
   }
 }

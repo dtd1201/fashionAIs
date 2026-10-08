@@ -1,0 +1,18 @@
+{
+	admin off
+}
+
+https://localhost:8443 {
+	tls internal
+	reverse_proxy web:3000
+}
+
+https://localhost:8444 {
+	tls internal
+	reverse_proxy admin:3002
+}
+
+https://localhost:8445 {
+	tls internal
+	reverse_proxy api:3001
+}

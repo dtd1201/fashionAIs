@@ -6,5 +6,5 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> { asChild?
 
 export function Button({ className, asChild, ...props }: ButtonProps) {
   const Component = asChild ? Slot : 'button';
-  return <Component className={cn('inline-flex h-11 items-center justify-center rounded-lg bg-cyan-300 px-5 text-sm font-bold text-slate-950 transition hover:bg-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:opacity-50', className)} {...props} />;
+  return <Component className={cn('inline-flex h-10 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50', className)} {...props} />;
 }

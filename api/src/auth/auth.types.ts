@@ -10,7 +10,10 @@ export interface RefreshTokenPayload {
   sub: string;
   sid: string;
   type: 'refresh';
+  context?: AuthSessionContext;
 }
+
+export type AuthSessionContext = 'customer' | 'admin';
 
 export interface AuthenticatedRequest extends Request {
   authUser: AuthUser;

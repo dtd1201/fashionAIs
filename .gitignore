@@ -22,6 +22,7 @@
 .dev.vars
 .env
 .env.*
+!.env.smoke.example
 .env.*.local
 .env.local
 .idea/

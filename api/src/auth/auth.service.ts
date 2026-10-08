@@ -13,7 +13,11 @@ import * as argon2 from 'argon2';
 import { PrismaService } from '../database/prisma.service';
 import type { LoginDto } from './dto/login.dto';
 import type { RegisterDto } from './dto/register.dto';
-import type { RefreshTokenPayload, RequestMetadata } from './auth.types';
+import type {
+  AuthSessionContext,
+  RefreshTokenPayload,
+  RequestMetadata,
+} from './auth.types';
 
 export interface AuthSessionResult extends AuthTokenResponse {
   refreshToken: string;
@@ -66,7 +70,7 @@ export class AuthService {
           });
           return createdUser;
         });
-        return this.createSession(user, metadata);
+        return this.createSession(user, metadata, 'customer');
       } catch (error) {
         if (!this.isUniqueConstraintError(error)) throw error;
         if (this.isUniqueTarget(error, 'User', 'email')) {
@@ -98,25 +102,23 @@ export class AuthService {
     dto: LoginDto,
     metadata: RequestMetadata,
   ): Promise<AuthSessionResult> {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email.trim().toLowerCase() },
-    });
-    const passwordValid = user?.passwordHash
-      ? await argon2.verify(user.passwordHash, dto.password)
-      : await this.runDummyPasswordCheck(dto.password);
+    const user = await this.authenticate(dto);
+    return this.createSession(user, metadata, 'customer');
+  }
 
-    if (!user || !passwordValid || user.status !== 'ACTIVE') {
-      throw new UnauthorizedException({
-        code: 'INVALID_CREDENTIALS',
-        message: 'Invalid email or password',
-      });
-    }
-    return this.createSession(user, metadata);
+  async loginAdmin(
+    dto: LoginDto,
+    metadata: RequestMetadata,
+  ): Promise<AuthSessionResult> {
+    const user = await this.authenticate(dto);
+    if (!user.isSystemAdmin) throw this.invalidCredentials();
+    return this.createSession(user, metadata, 'admin');
   }
 
   async refresh(
     refreshToken: string | undefined,
     metadata: RequestMetadata,
+    context: AuthSessionContext = 'customer',
   ): Promise<AuthSessionResult> {
     if (!refreshToken) throw this.invalidRefreshToken();
 
@@ -128,6 +130,9 @@ export class AuthService {
         },
       );
       if (payload.type !== 'refresh') throw new Error('Invalid token type');
+      if (!this.isRefreshContextValid(payload.context, context)) {
+        throw new Error('Invalid session context');
+      }
 
       const session = await this.prisma.authSession.findUnique({
         where: { id: payload.sid },
@@ -139,6 +144,7 @@ export class AuthService {
         session.revokedAt ||
         session.expiresAt <= new Date() ||
         session.user.status !== 'ACTIVE' ||
+        (context === 'admin' && !session.user.isSystemAdmin) ||
         !this.tokenHashesMatch(
           session.refreshTokenHash,
           this.hashToken(refreshToken),
@@ -147,13 +153,21 @@ export class AuthService {
         throw new Error('Invalid session');
       }
 
-      return await this.rotateSession(session.id, session.user, metadata);
+      return await this.rotateSession(
+        session.id,
+        session.user,
+        metadata,
+        context,
+      );
     } catch {
       throw this.invalidRefreshToken();
     }
   }
 
-  async logout(refreshToken: string | undefined): Promise<void> {
+  async logout(
+    refreshToken: string | undefined,
+    context: AuthSessionContext = 'customer',
+  ): Promise<void> {
     if (!refreshToken) return;
     try {
       const payload = await this.jwt.verifyAsync<RefreshTokenPayload>(
@@ -163,6 +177,12 @@ export class AuthService {
           ignoreExpiration: true,
         },
       );
+      if (
+        payload.type !== 'refresh' ||
+        !this.isRefreshContextValid(payload.context, context)
+      ) {
+        return;
+      }
       await this.prisma.authSession.updateMany({
         where: { id: payload.sid, userId: payload.sub, revokedAt: null },
         data: { revokedAt: new Date() },
@@ -175,9 +195,10 @@ export class AuthService {
   private async createSession(
     user: User,
     metadata: RequestMetadata,
+    context: AuthSessionContext,
   ): Promise<AuthSessionResult> {
     const sessionId = randomUUID();
-    const tokens = await this.createTokens(user, sessionId);
+    const tokens = await this.createTokens(user, sessionId, context);
     await this.prisma.authSession.create({
       data: {
         id: sessionId,
@@ -195,9 +216,10 @@ export class AuthService {
     currentSessionId: string,
     user: User,
     metadata: RequestMetadata,
+    context: AuthSessionContext,
   ): Promise<AuthSessionResult> {
     const nextSessionId = randomUUID();
-    const tokens = await this.createTokens(user, nextSessionId);
+    const tokens = await this.createTokens(user, nextSessionId, context);
     await this.prisma.$transaction(async (transaction) => {
       const revoked = await transaction.authSession.updateMany({
         where: { id: currentSessionId, revokedAt: null },
@@ -221,6 +243,7 @@ export class AuthService {
   private async createTokens(
     user: User,
     sessionId: string,
+    context: AuthSessionContext,
   ): Promise<{
     accessToken: string;
     refreshToken: string;
@@ -241,7 +264,7 @@ export class AuthService {
         },
       ),
       this.jwt.signAsync(
-        { sub: user.id, sid: sessionId, type: 'refresh' },
+        { sub: user.id, sid: sessionId, type: 'refresh', context },
         {
           secret: this.config.getOrThrow<string>('auth.refreshSecret'),
           expiresIn: refreshExpiresIn as JwtSignOptions['expiresIn'],
@@ -258,6 +281,29 @@ export class AuthService {
   private async runDummyPasswordCheck(password: string): Promise<boolean> {
     await argon2.verify(DUMMY_ARGON2_HASH, password);
     return false;
+  }
+
+  private async authenticate(dto: LoginDto): Promise<User> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email.trim().toLowerCase() },
+    });
+    const passwordValid = user?.passwordHash
+      ? await argon2.verify(user.passwordHash, dto.password)
+      : await this.runDummyPasswordCheck(dto.password);
+
+    if (!user || !passwordValid || user.status !== 'ACTIVE') {
+      throw this.invalidCredentials();
+    }
+    return user;
+  }
+
+  private isRefreshContextValid(
+    tokenContext: AuthSessionContext | undefined,
+    expectedContext: AuthSessionContext,
+  ): boolean {
+    // Tokens issued before session contexts existed are customer tokens.
+    return tokenContext === expectedContext ||
+      (tokenContext === undefined && expectedContext === 'customer');
   }
 
   private isUniqueConstraintError(
@@ -341,6 +387,13 @@ export class AuthService {
     return new UnauthorizedException({
       code: 'INVALID_REFRESH_TOKEN',
       message: 'Session is invalid or expired',
+    });
+  }
+
+  private invalidCredentials(): UnauthorizedException {
+    return new UnauthorizedException({
+      code: 'INVALID_CREDENTIALS',
+      message: 'Invalid email or password',
     });
   }
 }
