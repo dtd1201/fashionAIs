@@ -1,2 +1,21 @@
-import assert from 'node:assert/strict'; import test from 'node:test'; import { validatePublicEnv } from './env';
-test('customer production config requires an HTTPS API URL', () => { assert.throws(() => validatePublicEnv({ NODE_ENV: 'production', NEXT_PUBLIC_API_URL: 'http://api.example.com/api/v1' })); assert.equal(validatePublicEnv({ NODE_ENV: 'production', NEXT_PUBLIC_API_URL: 'https://api.example.com/api/v1' }).NEXT_PUBLIC_API_URL, 'https://api.example.com/api/v1'); });
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { validatePublicEnv } from './env-validation';
+
+test('customer production config requires an HTTPS API URL', () => {
+  assert.throws(
+    () =>
+      validatePublicEnv({
+        NODE_ENV: 'production',
+        NEXT_PUBLIC_API_URL: 'http://api.example.com/api/v1',
+      }),
+    /must use HTTPS/,
+  );
+  assert.equal(
+    validatePublicEnv({
+      NODE_ENV: 'production',
+      NEXT_PUBLIC_API_URL: 'https://api.example.com/api/v1',
+    }).NEXT_PUBLIC_API_URL,
+    'https://api.example.com/api/v1',
+  );
+});

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { GenerationStatus } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
@@ -22,6 +22,7 @@ export interface AiGenerationJobPayload {
 }
 
 class AiOutputStorageError extends Error {}
+class AiJobLeaseLostError extends Error {}
 
 @Injectable()
 export class AiGenerationProcessor {
@@ -39,51 +40,27 @@ export class AiGenerationProcessor {
     payload: AiGenerationJobPayload,
     attempt: number,
   ): Promise<void> {
-    const record = await this.prisma.aIJob.findFirst({
-      where: { id: payload.aiJobId, generationId: payload.generationId },
-      include: {
-        generation: { include: { inputs: { include: { asset: true } } } },
-      },
-    });
+    const leaseOwner = randomUUID();
+    const record = await this.claim(payload, attempt, leaseOwner);
     if (!record || ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(record.status))
       return;
     if (
       record.generation.status === 'CANCEL_REQUESTED' ||
       record.generation.status === 'CANCELLED'
     ) {
-      await this.cancel(record.id, record.generationId);
+      await this.cancel(record.id, record.generationId, leaseOwner);
       return;
     }
 
-    const claimed = await this.prisma.$transaction(async (transaction) => {
-      const job = await transaction.aIJob.updateMany({
-        where: { id: record.id, status: 'QUEUED' },
-        data: {
-          status: 'PROCESSING',
-          attempt,
-          startedAt: record.startedAt ?? new Date(),
-          errorCode: null,
-          errorMessage: null,
-        },
-      });
-      if (job.count !== 1) return false;
-      const generation = await transaction.generation.updateMany({
-        where: { id: record.generationId, status: 'QUEUED' },
-        data: {
-          status: 'PROCESSING',
-          startedAt: record.generation.startedAt ?? new Date(),
-          errorCode: null,
-          errorMessage: null,
-        },
-      });
-      if (generation.count !== 1)
-        throw new Error('Generation state changed before claim');
-      return true;
-    });
-    if (!claimed) return;
-
     const providerStartedAt = Date.now();
     let providerCompleted = false;
+    let leaseLost = false;
+    const heartbeat = setInterval(() => {
+      void this.renewLease(record.id, leaseOwner).then((renewed) => {
+        if (!renewed) leaseLost = true;
+      });
+    }, Math.max(10, Math.floor(this.leaseMs() / 3)));
+    heartbeat.unref();
     try {
       const provider = this.providers.resolve(record.provider, record.jobType);
       this.logProviderRequest(record, 'start', 0);
@@ -101,10 +78,11 @@ export class AiGenerationProcessor {
         })),
         providerJobId: record.providerJobId ?? undefined,
         persistProviderJobId: async (providerJobId) => {
-          await this.prisma.aIJob.update({
-            where: { id: record.id },
+          const updated = await this.prisma.aIJob.updateMany({
+            where: { id: record.id, status: 'PROCESSING', leaseOwner },
             data: { providerJobId },
           });
+          if (updated.count !== 1) throw new AiJobLeaseLostError();
         },
         isCancellationRequested: () =>
           this.isCancellationRequested(record.generationId),
@@ -115,12 +93,14 @@ export class AiGenerationProcessor {
         Date.now() - providerStartedAt,
       );
       providerCompleted = true;
+      await this.assertLease(record.id, leaseOwner, leaseLost);
       if (await this.isCancellationRequested(record.generationId)) {
-        await this.cancel(record.id, record.generationId);
+        await this.cancel(record.id, record.generationId, leaseOwner);
         return;
       }
 
       for (const [position, output] of result.outputs.entries()) {
+        await this.assertLease(record.id, leaseOwner, leaseLost);
         const existing = await this.prisma.generationOutputAsset.findUnique({
           where: {
             generationId_position: {
@@ -147,9 +127,10 @@ export class AiGenerationProcessor {
           await this.storage
             .deleteObject(bucket, objectKey)
             .catch(() => undefined);
-          await this.cancel(record.id, record.generationId);
+          await this.cancel(record.id, record.generationId, leaseOwner);
           return;
         }
+        await this.assertLease(record.id, leaseOwner, leaseLost);
         await this.prisma.$transaction(async (transaction) => {
           const asset = await transaction.asset.upsert({
             where: { id: assetId },
@@ -188,14 +169,17 @@ export class AiGenerationProcessor {
 
       const completedAt = new Date();
       await this.prisma.$transaction(async (transaction) => {
-        await transaction.aIJob.updateMany({
-          where: { id: record.id, status: 'PROCESSING' },
+        const completed = await transaction.aIJob.updateMany({
+          where: { id: record.id, status: 'PROCESSING', leaseOwner },
           data: {
             status: 'SUCCEEDED',
             providerJobId: result.providerJobId,
             finishedAt: completedAt,
+            leaseOwner: null,
+            leaseExpiresAt: null,
           },
         });
+        if (completed.count !== 1) throw new AiJobLeaseLostError();
         await transaction.generation.updateMany({
           where: { id: record.generationId, status: { in: ['PROCESSING', 'CANCEL_REQUESTED'] } },
           data: { status: 'COMPLETED', completedAt, creditsFinalizedAt: completedAt },
@@ -203,6 +187,7 @@ export class AiGenerationProcessor {
       });
       this.log(record, attempt, 'complete', 'COMPLETED');
     } catch (error) {
+      if (error instanceof AiJobLeaseLostError) throw error;
       if (!providerCompleted) {
         this.logProviderRequest(
           record,
@@ -216,7 +201,7 @@ export class AiGenerationProcessor {
         );
       }
       if (error instanceof AiProviderCancelledError) {
-        await this.cancel(record.id, record.generationId);
+        await this.cancel(record.id, record.generationId, leaseOwner);
         return;
       }
       const permanent = error instanceof AiProviderPermanentError;
@@ -229,39 +214,45 @@ export class AiGenerationProcessor {
             ? error.code
             : 'AI_PROVIDER_TRANSIENT_ERROR';
       if (!finalAttempt) {
-        await this.prisma.$transaction([
-          this.prisma.aIJob.update({
-            where: { id: record.id },
+        await this.prisma.$transaction(async (transaction) => {
+          const released = await transaction.aIJob.updateMany({
+            where: { id: record.id, status: 'PROCESSING', leaseOwner },
             data: {
               status: 'QUEUED',
               attempt,
               errorCode,
               errorMessage: 'Generation attempt failed and will retry',
+              leaseOwner: null,
+              leaseExpiresAt: null,
             },
-          }),
-          this.prisma.generation.update({
+          });
+          if (released.count !== 1) throw new AiJobLeaseLostError();
+          await transaction.generation.updateMany({
             where: { id: record.generationId },
             data: {
               status: 'QUEUED',
               errorCode,
               errorMessage: 'Generation attempt failed and will retry',
             },
-          }),
-        ]);
+          });
+        });
         throw error;
       }
       const failedAt = new Date();
       await this.prisma.$transaction(async (transaction) => {
-        await transaction.aIJob.update({
-          where: { id: record.id },
+        const failed = await transaction.aIJob.updateMany({
+          where: { id: record.id, status: 'PROCESSING', leaseOwner },
           data: {
             status: 'FAILED',
             attempt,
             errorCode,
             errorMessage: 'Generation processing failed',
             finishedAt: failedAt,
+            leaseOwner: null,
+            leaseExpiresAt: null,
           },
         });
+        if (failed.count !== 1) throw new AiJobLeaseLostError();
         await transaction.generation.update({
           where: { id: record.generationId },
           data: {
@@ -275,6 +266,117 @@ export class AiGenerationProcessor {
       });
       this.log(record, attempt, 'fail', 'FAILED');
       if (!permanent) throw error;
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  private async claim(
+    payload: AiGenerationJobPayload,
+    attempt: number,
+    leaseOwner: string,
+  ) {
+    while (true) {
+      const record = await this.prisma.aIJob.findFirst({
+        where: { id: payload.aiJobId, generationId: payload.generationId },
+        include: {
+          generation: { include: { inputs: { include: { asset: true } } } },
+        },
+      });
+      if (!record || ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(record.status))
+        return record;
+      if (['COMPLETED', 'FAILED'].includes(record.generation.status)) return null;
+      if (record.generation.status === 'CANCELLED') {
+        await this.cancel(record.id, record.generationId);
+        return null;
+      }
+
+      const now = new Date();
+      const staleBefore = new Date(now.getTime() - this.leaseMs());
+      const leaseExpiresAt = new Date(now.getTime() + this.leaseMs());
+      const claimed = await this.prisma.$transaction(async (transaction) => {
+        const job = await transaction.aIJob.updateMany({
+          where: {
+            id: record.id,
+            OR: [
+              { status: 'QUEUED' },
+              { status: 'PROCESSING', leaseExpiresAt: { lte: now } },
+              {
+                status: 'PROCESSING',
+                leaseExpiresAt: null,
+                updatedAt: { lte: staleBefore },
+              },
+            ],
+          },
+          data: {
+            status: 'PROCESSING',
+            attempt,
+            startedAt: record.startedAt ?? now,
+            leaseOwner,
+            leaseExpiresAt,
+            heartbeatAt: now,
+            errorCode: null,
+            errorMessage: null,
+          },
+        });
+        if (job.count !== 1) return false;
+        if (record.generation.status !== 'CANCEL_REQUESTED') {
+          const generation = await transaction.generation.updateMany({
+            where: {
+              id: record.generationId,
+              status: { in: ['QUEUED', 'PROCESSING'] },
+            },
+            data: {
+              status: 'PROCESSING',
+              startedAt: record.generation.startedAt ?? now,
+              errorCode: null,
+              errorMessage: null,
+            },
+          });
+          if (generation.count !== 1)
+            throw new Error('Generation state changed before claim');
+        }
+        return true;
+      });
+      if (claimed) {
+        return this.prisma.aIJob.findFirst({
+          where: { id: payload.aiJobId, generationId: payload.generationId },
+          include: {
+            generation: { include: { inputs: { include: { asset: true } } } },
+          },
+        });
+      }
+
+      const waitUntil = record.leaseExpiresAt?.getTime() ?? Date.now() + this.leaseMs();
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(25, waitUntil - Date.now() + 25)),
+      );
+    }
+  }
+
+  private leaseMs(): number {
+    return this.config.getOrThrow<number>('ai.jobLeaseMs');
+  }
+
+  private async renewLease(jobId: string, leaseOwner: string): Promise<boolean> {
+    const now = new Date();
+    const renewed = await this.prisma.aIJob.updateMany({
+      where: { id: jobId, status: 'PROCESSING', leaseOwner },
+      data: {
+        heartbeatAt: now,
+        leaseExpiresAt: new Date(now.getTime() + this.leaseMs()),
+      },
+    });
+    return renewed.count === 1;
+  }
+
+  private async assertLease(
+    jobId: string,
+    leaseOwner: string,
+    leaseLost: boolean,
+  ): Promise<void> {
+    if (leaseLost || !(await this.renewLease(jobId, leaseOwner))) {
+      throw new AiJobLeaseLostError();
     }
   }
 
@@ -291,12 +393,25 @@ export class AiGenerationProcessor {
     );
   }
 
-  private async cancel(aiJobId: string, generationId: string): Promise<void> {
+  private async cancel(
+    aiJobId: string,
+    generationId: string,
+    leaseOwner?: string,
+  ): Promise<void> {
     const now = new Date();
     await this.prisma.$transaction(async (transaction) => {
       await transaction.aIJob.updateMany({
-        where: { id: aiJobId, status: { in: ['QUEUED', 'PROCESSING'] } },
-        data: { status: 'CANCELLED', finishedAt: now },
+        where: {
+          id: aiJobId,
+          status: { in: ['QUEUED', 'PROCESSING'] },
+          ...(leaseOwner ? { OR: [{ status: 'QUEUED' }, { leaseOwner }] } : {}),
+        },
+        data: {
+          status: 'CANCELLED',
+          finishedAt: now,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+        },
       });
       await transaction.generation.updateMany({
         where: {

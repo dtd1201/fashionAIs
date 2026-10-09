@@ -1,6 +1,7 @@
 import { registerAs } from '@nestjs/config';
 
 export default registerAs('billing', () => ({
+  enabled: process.env.STRIPE_ENABLED === 'true',
   secretKey: process.env.STRIPE_SECRET_KEY?.trim() ?? '',
   webhookSecret: process.env.STRIPE_WEBHOOK_SECRET?.trim() ?? '',
   successUrl: process.env.STRIPE_SUCCESS_URL ?? 'http://localhost:3000/billing/success',

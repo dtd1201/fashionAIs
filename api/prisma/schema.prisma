@@ -159,6 +159,7 @@ model BillingCheckoutSession {
   id                      String                @id @default(uuid()) @db.Uuid
   organizationId          String                @db.Uuid
   createdByUserId         String                @db.Uuid
+  operationId             String                @db.Uuid
   stripeCheckoutSessionId String?               @unique
   selectionId             String
   mode                    BillingCheckoutMode
@@ -175,6 +176,7 @@ model BillingCheckoutSession {
   updatedAt               DateTime              @updatedAt
 
   @@index([organizationId, createdAt(sort: Desc)])
+  @@unique([organizationId, createdByUserId, operationId])
 }
 
 model StripeWebhookEvent {
@@ -331,6 +333,9 @@ model AIJob {
   errorCode      String?
   errorMessage   String?
   startedAt      DateTime?
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  heartbeatAt    DateTime?
   finishedAt     DateTime?
   generation     Generation     @relation(fields: [generationId], references: [id], onDelete: Cascade)
   organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -338,6 +343,7 @@ model AIJob {
   updatedAt      DateTime       @updatedAt
 
   @@index([organizationId, status])
+  @@index([status, leaseExpiresAt])
 }
 
 model OrganizationMember {

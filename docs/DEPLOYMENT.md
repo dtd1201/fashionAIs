@@ -1,47 +1,175 @@
 # Production Deployment
 
-## Topology and domains
+## Topology and exposure
 
-Run four independent processes: API, AI worker, customer web, and admin web. PostgreSQL, Redis, and a private R2 bucket are required. Typical domains are `app.example.com`, `admin.example.com`, and `api.example.com`. Terminate HTTPS at a trusted reverse proxy and prevent direct public access to PostgreSQL, Redis, and the API container port.
+The single-host template runs API, AI worker, customer web, admin web,
+PostgreSQL, and Redis. Only the reverse proxy should be Internet-facing. The
+Compose ports bind to `127.0.0.1`; never expose PostgreSQL (`5432`) or Redis
+(`6379`) through the firewall. Permit inbound `80/443` and restricted SSH only.
 
-## Configuration
+Use managed PostgreSQL/Redis when higher availability is required. Production
+validation rejects loopback database and Redis addresses, but accepts Compose
+service names such as `postgres` and `redis`, private DNS, and private IPs.
 
-Copy `api/.env.example`, `web/.env.example`, `admin/.env.example`, and `workers/r2-gateway/.dev.vars.example` into the deployment secret manager. Never commit populated files. Production requires strong distinct JWT secrets, explicit HTTPS CORS origins, HTTPS Stripe return URLs, PostgreSQL/Redis connectivity, and complete configuration for the selected storage and AI transports. Browser bundles receive only `NEXT_PUBLIC_API_URL`.
+## Create configuration
 
-Worker mode is the preferred R2 transport. Deploy `workers/r2-gateway`, bind `ASSETS_BUCKET`, store `R2_GATEWAY_SIGNING_SECRET` as a Worker secret, and set `ALLOWED_ORIGINS` to the exact customer origins. Keep the bucket private. The API controls object namespaces and short-lived URL expiry.
+Create the secret file without making it world-readable:
+
+```bash
+install -m 600 /dev/null .env.production
+editor .env.production
+chmod 600 .env.production
+```
+
+Start from `api/.env.example`, then add `POSTGRES_DB`, `POSTGRES_USER`,
+`POSTGRES_PASSWORD`, and `NEXT_PUBLIC_API_URL`. Use distinct random JWT
+secrets, a non-empty Redis password, explicit HTTPS CORS origins, and real R2
+values. Do not set `ALLOW_LOCAL_PRODUCTION_SMOKE=true` in production.
+
+`AI_VIRTUAL_TRY_ON_PROVIDER=mock` is rejected in production unless
+`ALLOW_MOCK_AI_IN_PRODUCTION=true`. That override is for controlled staging or
+an emergency paid-AI shutdown, not a public launch.
+
+Billing is atomic: use `STRIPE_ENABLED=false` with empty Stripe values, or set
+`STRIPE_ENABLED=true` and provide both secrets, HTTPS success/cancel URLs, and
+all seven `STRIPE_PRICE_*` IDs. Partial configuration fails startup.
+
+Validate interpolation and the final service definition before every release:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml config >/tmp/fashionais-compose.yml
+```
+
+Review `/tmp/fashionais-compose.yml` securely and remove it afterward because
+Compose output may contain resolved secrets.
+
+## R2 Worker
+
+Edit the production `ALLOWED_ORIGINS` in `workers/r2-gateway/wrangler.jsonc`,
+then set the secret and deploy the explicit production environment:
+
+```bash
+cd workers/r2-gateway
+npx wrangler secret put R2_GATEWAY_SIGNING_SECRET --env production
+npx wrangler deploy --env production
+npx wrangler tail --env production
+```
+
+The secret must match the API and is never stored in Wrangler configuration.
+Keep the R2 bucket private.
 
 ## Release procedure
 
-1. Back up PostgreSQL and verify the backup is readable.
-2. Build and test all workspaces.
-3. Run `npm run prisma:deploy --workspace @fashion-ais/api` once as a controlled migration job.
-4. Start API and worker with the same immutable image and environment; override the worker command with `node dist/worker.js`.
-5. Deploy web and admin builds compiled with the production HTTPS API URL.
-6. Configure the Stripe webhook to `https://api.example.com/api/v1/billing/webhook` and verify signatures before enabling checkout.
-7. Check `/api/v1/health/live`, `/api/v1/health/ready`, and `/api/v1/health`.
+Back up PostgreSQL first using `docs/BACKUP_RESTORE.md`, then build images:
 
-The included `docker-compose.production.yml` is a single-host template. Managed PostgreSQL and Redis are preferred for higher availability; remove those services and point `DATABASE_URL`/Redis settings at the managed endpoints.
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml build
+```
 
-## Process and shutdown behavior
+Run migrations as a controlled one-off before starting the new application:
 
-The API handles SIGTERM/SIGINT through Nest shutdown hooks, stops accepting HTTP work, then closes BullMQ/Redis and Prisma. The worker stops taking new jobs and waits for active BullMQ jobs before closing. Give the worker at least a two-minute termination grace period, or longer than the configured provider timeout.
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml run --rm api \
+  /app/node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma
+docker compose --env-file .env.production -f docker-compose.production.yml run --rm api \
+  /app/node_modules/.bin/prisma migrate status --schema prisma/schema.prisma
+```
 
-## Queue operations
+Start or update the stack:
 
-Configure concurrency, attempts, exponential backoff, queue prefix, and completed/failed retention with the `AI_*` variables in `api/.env.example`. Generation identifiers and idempotency remain database-authoritative. Final failure handling continues through the existing processor and credit-refund semantics.
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml up -d
+docker compose --env-file .env.production -f docker-compose.production.yml ps
+```
 
-## Reverse proxy and security
+Verify health through the public TLS endpoint:
 
-Forward the real request scheme and IP only through the trusted proxy chain, then set `TRUST_PROXY` to the exact hop count or subnet. Preserve `X-Request-Id` or allow the API to create one. Do not log authorization headers, cookies, signed URLs, provider payloads, or request bodies. Allow credentials only for the explicit customer/admin origins.
+```bash
+curl -fsS https://api.example.com/api/v1/health/live
+curl -fsS https://api.example.com/api/v1/health/ready
+```
 
-## Backups and data authority
+The worker has no HTTP health endpoint. Verify it is running and connected by
+inspecting logs and completing one MOCK/staging generation:
 
-PostgreSQL is authoritative for users, organizations, assets, generation state, billing reconciliation, and the append-only credit ledger. Take encrypted automated backups with point-in-time recovery where possible and perform regular restore drills. Take a fresh backup before every schema migration. R2 supplies object durability, but object inventory and PostgreSQL Asset records should be reconciled operationally. Redis persistence helps queue recovery but is not a substitute for PostgreSQL backups.
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml logs --tail=200 worker
+```
 
-## Rollback and rotation
+## Operations
 
-Rollback application images independently. Do not roll back a database migration unless a reviewed down-migration is known safe; prefer forward fixes. Rotate JWT, provider, Stripe, Redis, database, R2, and Worker-signing secrets through the platform secret manager. JWT secret rotation invalidates affected sessions; Worker-signing rotation must be coordinated with the API because outstanding signed URLs use the previous key.
+Inspect logs and restart individual services:
 
-## Monitoring
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml logs -f --tail=200 api worker
+docker compose --env-file .env.production -f docker-compose.production.yml restart api
+docker compose --env-file .env.production -f docker-compose.production.yml restart worker
+```
 
-Collect structured stdout/stderr logs, alert on readiness failure, repeated worker failures, growing failed queues, Stripe webhook processing errors, and database backup failures. No paid observability service is required.
+Stop and start without deleting persistent volumes:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml stop
+docker compose --env-file .env.production -f docker-compose.production.yml start
+```
+
+Never use `down --volumes` in production. Compose rotates container logs at
+five 10 MiB files per service. Monitor host filesystem usage, Docker volumes,
+PostgreSQL growth, R2 usage, and backup storage independently.
+
+## Initial system administrator
+
+There is no public system-admin registration. Register the intended account
+normally, identify it by exact email, then use a reviewed one-off database
+command in the PostgreSQL container:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml exec postgres \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "UPDATE \"User\" SET \"isSystemAdmin\" = true WHERE email = '\''admin@example.com'\'' RETURNING id,email,\"isSystemAdmin\";"'
+```
+
+Replace the email, confirm exactly one returned row, and retain an audit record
+of who approved the change. Do not expose an admin-creation HTTP endpoint.
+
+## Functional verification
+
+For R2, create an upload through the authenticated API, PUT the exact file with
+the returned `Content-Type`, call completion, then verify authenticated GET and
+HEAD. Also send a fresh small-limit URL a larger chunked body and confirm `413`
+without an object being published.
+
+Configure Stripe's endpoint as:
+
+```text
+https://api.example.com/api/v1/billing/stripe/webhook
+```
+
+Use Stripe test mode/CLI before enabling live billing. Confirm signature
+verification, one local checkout record per operation ID, and one credit grant
+after duplicate webhook delivery. Never perform a live charge as a deployment
+check.
+
+## Rollback and emergencies
+
+Pin immutable image tags in the deployment environment. To roll back code,
+restore the previous tags and run:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml pull
+docker compose --env-file .env.production -f docker-compose.production.yml up -d api worker web admin
+```
+
+Do not casually reverse an applied production migration. Prefer a reviewed
+forward-fix migration; restore a database only for a declared recovery event.
+
+Emergency billing disable: set `STRIPE_ENABLED=false`, then recreate API and
+worker. Checkout and webhook endpoints return controlled unavailable behavior.
+
+Emergency paid-AI disable: set virtual try-on to `mock` together with
+`ALLOW_MOCK_AI_IN_PRODUCTION=true`, recreate API and worker, and clearly mark
+the environment as degraded/internal-only.
+
+Rotate database, Redis, JWT, AI provider, Stripe, R2, and Worker-signing secrets
+through the deployment secret manager. Worker-signing rotation must be
+coordinated with the API because outstanding signed URLs use the old key.

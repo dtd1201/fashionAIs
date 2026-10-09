@@ -5,10 +5,13 @@ const organizationId = '11111111-1111-4111-8111-111111111111';
 const user = { id: '22222222-2222-4222-8222-222222222222', email: 'owner@example.com' };
 
 function checkoutHarness(role: 'OWNER' | 'ADMIN' | 'MEMBER' = 'OWNER') {
-  const local = { id: '33333333-3333-4333-8333-333333333333' };
+  const local = { id: '33333333-3333-4333-8333-333333333333', selectionId: 'creator', stripeCheckoutSessionId: null };
   const stripe = {
     customers: { create: jest.fn().mockResolvedValue({ id: 'cus_1' }) },
-    checkout: { sessions: { create: jest.fn().mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/pay/cs_1' }) } },
+    checkout: { sessions: {
+      create: jest.fn().mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/pay/cs_1' }),
+      retrieve: jest.fn().mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/pay/cs_1' }),
+    } },
     webhooks: { constructEvent: jest.fn() },
   };
   const prisma = {
@@ -17,43 +20,80 @@ function checkoutHarness(role: 'OWNER' | 'ADMIN' | 'MEMBER' = 'OWNER') {
       upsert: jest.fn().mockResolvedValue({ organizationId, stripeCustomerId: 'cus_1' }),
     },
     billingCheckoutSession: {
-      create: jest.fn().mockResolvedValue(local),
+      upsert: jest.fn().mockImplementation(({ create }: any) => Promise.resolve({ ...local, selectionId: create.selectionId })),
       update: jest.fn().mockResolvedValue(local),
     },
   };
   const access = { requireMembership: jest.fn().mockResolvedValue({ role }) };
   const config = {
-    get: jest.fn((key: string) => key === 'billing.prices' ? { starter: 'price_starter', creator: 'price_creator', 'topup-500': 'price_topup_500' } : 'whsec_test'),
+    get: jest.fn((key: string) => key === 'billing.enabled' ? true : key === 'billing.prices' ? { starter: 'price_starter', creator: 'price_creator', 'topup-500': 'price_topup_500' } : 'whsec_test'),
     getOrThrow: jest.fn((key: string) => key === 'billing.successUrl' ? 'http://localhost:3000/billing/success' : 'http://localhost:3000/pricing'),
   };
   const service = new BillingService(prisma as never, access as never, { grant: jest.fn() } as never, config as never, stripe as never);
-  return { service, stripe, prisma, access };
+  return { service, stripe, prisma, access, config };
 }
 
 describe('BillingService checkout', () => {
+  const operationId = '44444444-4444-4444-8444-444444444444';
+
   it.each(['OWNER', 'ADMIN'] as const)('%s creates a subscription checkout from the backend catalog', async (role) => {
     const state = checkoutHarness(role);
-    await expect(state.service.createCheckoutSession(user as never, organizationId, 'creator')).resolves.toEqual({ url: 'https://checkout.stripe.com/pay/cs_1', sessionId: 'cs_1' });
-    expect(state.stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ mode: 'subscription', line_items: [{ price: 'price_creator', quantity: 1 }] }));
+    await expect(state.service.createCheckoutSession(user as never, organizationId, 'creator', operationId)).resolves.toEqual({ url: 'https://checkout.stripe.com/pay/cs_1', sessionId: 'cs_1' });
+    expect(state.stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ mode: 'subscription', line_items: [{ price: 'price_creator', quantity: 1 }] }), { idempotencyKey: 'billing-checkout:33333333-3333-4333-8333-333333333333' });
   });
 
   it('uses payment mode and the configured price for top-ups', async () => {
     const state = checkoutHarness();
-    await state.service.createCheckoutSession(user as never, organizationId, 'topup-500');
-    expect(state.stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ mode: 'payment', line_items: [{ price: 'price_topup_500', quantity: 1 }] }));
+    await state.service.createCheckoutSession(user as never, organizationId, 'topup-500', operationId);
+    expect(state.stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ mode: 'payment', line_items: [{ price: 'price_topup_500', quantity: 1 }] }), expect.anything());
   });
 
   it('rejects members and invalid selections with stable codes', async () => {
-    await expect(checkoutHarness('MEMBER').service.createCheckoutSession(user as never, organizationId, 'creator')).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BILLING_ACCESS_DENIED' }) });
-    await expect(checkoutHarness().service.createCheckoutSession(user as never, organizationId, 'invalid' as never)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BILLING_SELECTION_INVALID' }) });
+    await expect(checkoutHarness('MEMBER').service.createCheckoutSession(user as never, organizationId, 'creator', operationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BILLING_ACCESS_DENIED' }) });
+    await expect(checkoutHarness().service.createCheckoutSession(user as never, organizationId, 'invalid' as never, operationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BILLING_SELECTION_INVALID' }) });
   });
 
   it('reuses the organization Stripe customer', async () => {
     const state = checkoutHarness();
     state.prisma.billingCustomer.findUnique.mockResolvedValue({ organizationId, stripeCustomerId: 'cus_existing' });
-    await state.service.createCheckoutSession(user as never, organizationId, 'starter');
+    await state.service.createCheckoutSession(user as never, organizationId, 'starter', operationId);
     expect(state.stripe.customers.create).not.toHaveBeenCalled();
-    expect(state.stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ customer: 'cus_existing' }));
+    expect(state.stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ customer: 'cus_existing' }), expect.anything());
+  });
+
+  it('reuses a persisted remote checkout for the same operation', async () => {
+    const state = checkoutHarness();
+    state.prisma.billingCheckoutSession.upsert.mockResolvedValue({
+      id: '33333333-3333-4333-8333-333333333333',
+      selectionId: 'creator',
+      stripeCheckoutSessionId: 'cs_1',
+    });
+    await expect(state.service.createCheckoutSession(user as never, organizationId, 'creator', operationId)).resolves.toEqual({ url: 'https://checkout.stripe.com/pay/cs_1', sessionId: 'cs_1' });
+    expect(state.stripe.checkout.sessions.retrieve).toHaveBeenCalledWith('cs_1');
+    expect(state.stripe.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it('uses stable Stripe idempotency keys after an ambiguous retry', async () => {
+    const state = checkoutHarness();
+    state.stripe.checkout.sessions.create
+      .mockRejectedValueOnce(new Error('network timeout'))
+      .mockResolvedValueOnce({ id: 'cs_1', url: 'https://checkout.stripe.com/pay/cs_1' });
+    await expect(state.service.createCheckoutSession(user as never, organizationId, 'creator', operationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BILLING_CHECKOUT_FAILED' }) });
+    await expect(state.service.createCheckoutSession(user as never, organizationId, 'creator', operationId)).resolves.toEqual({ url: 'https://checkout.stripe.com/pay/cs_1', sessionId: 'cs_1' });
+    expect(state.stripe.customers.create).toHaveBeenCalledWith(
+      expect.anything(),
+      { idempotencyKey: `billing-customer:${organizationId}` },
+    );
+    expect(state.stripe.checkout.sessions.create.mock.calls[0]?.[1]).toEqual(
+      state.stripe.checkout.sessions.create.mock.calls[1]?.[1],
+    );
+  });
+
+  it('does not use an injected Stripe client while billing is disabled', async () => {
+    const state = checkoutHarness();
+    state.config.get.mockReturnValue(false as never);
+    await expect(state.service.createCheckoutSession(user as never, organizationId, 'creator', operationId)).rejects.toMatchObject({ response: expect.objectContaining({ code: 'BILLING_NOT_CONFIGURED' }) });
+    expect(state.stripe.checkout.sessions.create).not.toHaveBeenCalled();
   });
 });
 
@@ -61,7 +101,7 @@ describe('BillingService summary', () => {
   it('reports a disabled billing state without Stripe while preserving subscription data', async () => {
     const prisma = { organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({ creditBalance: { balance: 7 }, subscription: null }) } };
     const access = { requireMembership: jest.fn().mockResolvedValue({ role: 'OWNER' }) };
-    const config = { get: jest.fn((key: string) => key === 'billing.prices' ? {} : undefined) };
+    const config = { get: jest.fn((key: string) => key === 'billing.enabled' ? false : key === 'billing.prices' ? {} : undefined) };
     const service = new BillingService(prisma as never, access as never, {} as never, config as never, null);
     await expect(service.getSummary(user.id, organizationId)).resolves.toEqual({
       billingConfigured: false,

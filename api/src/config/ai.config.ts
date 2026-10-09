@@ -10,6 +10,7 @@ export default registerAs('ai', () => ({
   maxAttempts: Number(process.env.AI_JOB_MAX_ATTEMPTS ?? 3),
   backoffMs: Number(process.env.AI_JOB_BACKOFF_MS ?? 5000),
   workerConcurrency: Number(process.env.AI_WORKER_CONCURRENCY ?? 2),
+  jobLeaseMs: Number(process.env.AI_JOB_LEASE_MS ?? 60000),
   removeCompleteAge: Number(process.env.AI_JOB_REMOVE_COMPLETE_AGE ?? 86400),
   removeFailAge: Number(process.env.AI_JOB_REMOVE_FAIL_AGE ?? 604800),
   queuePrefix: process.env.AI_QUEUE_PREFIX ?? 'fashionais',

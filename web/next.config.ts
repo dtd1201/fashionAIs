@@ -1,4 +1,10 @@
 import type { NextConfig } from 'next';
+import { validatePublicEnv } from './src/lib/env-validation';
+
+validatePublicEnv({
+  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+  NODE_ENV: process.env.NODE_ENV,
+});
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,

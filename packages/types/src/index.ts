@@ -270,7 +270,7 @@ export type BillingSelectionId =
 export type BillingCheckoutStatus = 'CREATED' | 'COMPLETED' | 'EXPIRED' | 'FAILED';
 export type BillingSubscriptionStatus = 'INACTIVE' | 'ACTIVE' | 'PAST_DUE' | 'CANCELLED' | 'UNPAID';
 
-export interface CreateBillingCheckoutSessionRequest { selectionId: BillingSelectionId; }
+export interface CreateBillingCheckoutSessionRequest { selectionId: BillingSelectionId; operationId: string; }
 export interface CreateBillingCheckoutSessionResponse { url: string; sessionId: string; }
 export interface BillingCheckoutSessionView {
   sessionId: string;

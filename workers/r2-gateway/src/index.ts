@@ -16,7 +16,7 @@ interface R2ObjectBody extends R2ObjectMetadata {
 interface R2BucketBinding {
   put(
     key: string,
-    value: ReadableStream<Uint8Array>,
+    value: ReadableStream<Uint8Array> | Uint8Array,
     options?: { httpMetadata?: R2HttpMetadata },
   ): Promise<unknown>;
   get(key: string): Promise<R2ObjectBody | null>;
@@ -42,6 +42,17 @@ interface SignatureInput {
 
 const OBJECT_PATH_PREFIX = '/objects/';
 const PUBLIC_METHODS = 'PUT, GET, HEAD, OPTIONS';
+const MAX_R2_PUT_BYTES = 5 * 1024 * 1024 * 1024;
+const MAX_BUFFERED_UPLOAD_BYTES = 32 * 1024 * 1024;
+
+class ObjectTooLargeError extends Error {}
+class ContentLengthMismatchError extends Error {}
+
+declare class FixedLengthStream {
+  constructor(expectedLength: number | bigint);
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+}
 
 export function canonicalMessage(input: SignatureInput): string {
   return [
@@ -121,11 +132,8 @@ async function verifyRequest(
   }
   const contentType = params.get('contentType') || undefined;
   const maxBytesValue = params.get('maxBytes');
-  const maxBytes = maxBytesValue === null ? undefined : Number(maxBytesValue);
-  if (
-    maxBytes !== undefined &&
-    (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
-  ) {
+  const maxBytes = parseUnsignedInteger(maxBytesValue, MAX_R2_PUT_BYTES);
+  if (maxBytes === null) {
     return errorResponse(403, 'INVALID_SIGNATURE');
   }
   const input: SignatureInput = {
@@ -154,9 +162,12 @@ async function executeObjectRequest(
     if (signature.contentType && contentType !== signature.contentType) {
       return errorResponse(415, 'INVALID_CONTENT_TYPE');
     }
-    const contentLength = optionalNumber(
+    const contentLength = parseContentLength(
       request.headers.get('content-length'),
     );
+    if (contentLength === null) {
+      return errorResponse(400, 'INVALID_CONTENT_LENGTH');
+    }
     if (
       signature.maxBytes !== undefined &&
       contentLength !== undefined &&
@@ -164,9 +175,28 @@ async function executeObjectRequest(
     ) {
       return errorResponse(413, 'OBJECT_TOO_LARGE');
     }
-    await bucket.put(objectKey, request.body, {
-      httpMetadata: { contentType: signature.contentType ?? contentType },
-    });
+    if (signature.maxBytes === undefined) {
+      return errorResponse(403, 'INVALID_SIGNATURE');
+    }
+    const metadata = { contentType: signature.contentType ?? contentType };
+    const uploadResult =
+      contentLength === undefined
+        ? await putBufferedBody(
+            request.body,
+            bucket,
+            objectKey,
+            signature.maxBytes,
+            metadata,
+          )
+        : await putFixedLengthBody(
+            request.body,
+            bucket,
+            objectKey,
+            contentLength,
+            signature.maxBytes,
+            metadata,
+          );
+    if (uploadResult) return uploadResult;
     return new Response(null, { status: 204 });
   }
   if (request.method === 'GET') {
@@ -276,10 +306,136 @@ function errorResponse(status: number, code: string): Response {
   return Response.json({ error: code }, { status });
 }
 
-function optionalNumber(value: string | null): number | undefined {
-  if (value === null || value.trim() === '') return undefined;
+function parseContentLength(value: string | null): number | undefined | null {
+  return parseUnsignedInteger(value, Number.MAX_SAFE_INTEGER);
+}
+
+function parseUnsignedInteger(
+  value: string | null,
+  maximum: number,
+): number | undefined | null {
+  if (value === null) return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(value)) return null;
   const number = Number(value);
-  return Number.isFinite(number) ? number : undefined;
+  return Number.isSafeInteger(number) && number <= maximum ? number : null;
+}
+
+async function putFixedLengthBody(
+  body: ReadableStream<Uint8Array>,
+  bucket: R2BucketBinding,
+  objectKey: string,
+  contentLength: number,
+  maxBytes: number,
+  httpMetadata: R2HttpMetadata,
+): Promise<Response | undefined> {
+  let putResultPromise:
+    | Promise<{ ok: true } | { ok: false; error: unknown }>
+    | undefined;
+  try {
+    const fixedLength = new FixedLengthStream(contentLength);
+    putResultPromise = bucket
+      .put(objectKey, fixedLength.readable, { httpMetadata })
+      .then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    await pumpFixedLengthBody(
+      body,
+      fixedLength.writable,
+      contentLength,
+      maxBytes,
+    );
+    const putResult = await putResultPromise;
+    if (!putResult.ok) throw putResult.error;
+  } catch (error) {
+    if (putResultPromise) await putResultPromise;
+    if (error instanceof ObjectTooLargeError) {
+      return errorResponse(413, 'OBJECT_TOO_LARGE');
+    }
+    if (error instanceof ContentLengthMismatchError) {
+      return errorResponse(400, 'CONTENT_LENGTH_MISMATCH');
+    }
+    logPutFailure(error);
+    return errorResponse(500, 'STORAGE_WRITE_FAILED');
+  }
+}
+
+async function pumpFixedLengthBody(
+  body: ReadableStream<Uint8Array>,
+  destination: WritableStream<Uint8Array>,
+  contentLength: number,
+  maxBytes: number,
+): Promise<void> {
+  const reader = body.getReader();
+  const writer = destination.getWriter();
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      receivedBytes += value.byteLength;
+      if (receivedBytes > maxBytes) throw new ObjectTooLargeError();
+      if (receivedBytes > contentLength) {
+        throw new ContentLengthMismatchError();
+      }
+      await writer.write(value);
+    }
+    if (receivedBytes !== contentLength) {
+      throw new ContentLengthMismatchError();
+    }
+    await writer.close();
+  } catch (error) {
+    await writer.abort(error).catch(() => undefined);
+    await reader.cancel(error).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function putBufferedBody(
+  body: ReadableStream<Uint8Array>,
+  bucket: R2BucketBinding,
+  objectKey: string,
+  maxBytes: number,
+  httpMetadata: R2HttpMetadata,
+): Promise<Response | undefined> {
+  try {
+    const bufferLimit = Math.min(maxBytes, MAX_BUFFERED_UPLOAD_BYTES);
+    const bytes = new Uint8Array(bufferLimit);
+    const reader = body.getReader();
+    let receivedBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (receivedBytes + value.byteLength > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return errorResponse(413, 'OBJECT_TOO_LARGE');
+      }
+      if (receivedBytes + value.byteLength > MAX_BUFFERED_UPLOAD_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return errorResponse(413, 'BUFFERED_UPLOAD_LIMIT_EXCEEDED');
+      }
+      bytes.set(value, receivedBytes);
+      receivedBytes += value.byteLength;
+    }
+    await bucket.put(objectKey, bytes.subarray(0, receivedBytes), {
+      httpMetadata,
+    });
+  } catch (error) {
+    logPutFailure(error);
+    return errorResponse(500, 'STORAGE_WRITE_FAILED');
+  }
+}
+
+function logPutFailure(error: unknown): void {
+  const name = error instanceof Error ? error.name : typeof error;
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  console.error({
+    operation: 'r2.put',
+    errorName: name.slice(0, 80),
+    errorMessage: message
+      .replace(/https?:\/\/\S+/gi, '[redacted-url]')
+      .slice(0, 240),
+  });
 }
 
 function isObjectMethod(value: string): value is ObjectMethod {

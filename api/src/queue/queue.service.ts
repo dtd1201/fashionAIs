@@ -36,6 +36,20 @@ export class QueueService implements OnApplicationShutdown {
     return queueJobId;
   }
 
+  async ensureGenerationQueued(
+    payload: { generationId: string; aiJobId: string },
+    options: { attempts: number; backoffMs: number },
+  ): Promise<string> {
+    const queueJobId = `ai-job-${payload.aiJobId}`;
+    const existing = await this.aiQueue.getJob(queueJobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (!['completed', 'failed'].includes(state)) return queueJobId;
+      await existing.remove();
+    }
+    return this.enqueueGeneration(payload, options);
+  }
+
   async addHealthJob(): Promise<string> {
     const job = await this.queue.add(
       'health',

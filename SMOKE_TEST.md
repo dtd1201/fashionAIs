@@ -11,7 +11,8 @@ cp .env.smoke.example .env.smoke
 docker compose --env-file .env.smoke -f docker-compose.smoke.yml up --build -d
 ```
 
-The checked-in example uses mock AI providers, disables Stripe, and contains
+The checked-in example explicitly enables the local-production and mock-AI
+overrides, uses mock AI providers, disables Stripe with `STRIPE_ENABLED=false`, and contains
 only local placeholder secrets. If asset upload/download is part of the smoke
 test, put existing R2 Worker gateway values in the untracked `.env.smoke` file.
 Do not commit real credentials.

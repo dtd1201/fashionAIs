@@ -39,6 +39,7 @@ export class BillingService {
     user: AuthUser,
     organizationId: string,
     selectionId: BillingSelectionId,
+    operationId: string,
   ): Promise<CreateBillingCheckoutSessionResponse> {
     const membership = await this.access.requireMembership(user.id, organizationId);
     if (membership.role === 'MEMBER') {
@@ -49,19 +50,41 @@ export class BillingService {
     const stripe = this.requireStripe();
     const priceId = this.priceId(selectionId);
 
-    let localId: string | null = null;
     try {
-      const customerId = await this.getOrCreateCustomer(stripe, organizationId, user.email);
-      const local = await this.prisma.billingCheckoutSession.create({
-        data: {
+      const local = await this.prisma.billingCheckoutSession.upsert({
+        where: {
+          organizationId_createdByUserId_operationId: {
+            organizationId,
+            createdByUserId: user.id,
+            operationId,
+          },
+        },
+        create: {
           organizationId,
           createdByUserId: user.id,
+          operationId,
           selectionId,
           mode: item.mode === 'subscription' ? 'SUBSCRIPTION' : 'PAYMENT',
-          stripeCustomerId: customerId,
         },
+        update: {},
       });
-      localId = local.id;
+      if (local.selectionId !== selectionId) {
+        throw new BadRequestException({
+          code: 'BILLING_IDEMPOTENCY_CONFLICT',
+          message: 'Checkout operation was already used for another selection',
+        });
+      }
+      if (local.stripeCheckoutSessionId) {
+        const existing = await stripe.checkout.sessions.retrieve(local.stripeCheckoutSessionId);
+        if (!existing.url) throw new Error('Stripe Checkout did not return a URL');
+        return { url: existing.url, sessionId: existing.id };
+      }
+
+      const customerId = await this.getOrCreateCustomer(stripe, organizationId, user.email);
+      await this.prisma.billingCheckoutSession.update({
+        where: { id: local.id },
+        data: { stripeCustomerId: customerId },
+      });
       const metadata = { organizationId, billingCheckoutSessionId: local.id, selectionId };
       const session = await stripe.checkout.sessions.create({
         customer: customerId,
@@ -72,7 +95,7 @@ export class BillingService {
         client_reference_id: local.id,
         metadata,
         ...(item.mode === 'subscription' ? { subscription_data: { metadata } } : {}),
-      });
+      }, { idempotencyKey: `billing-checkout:${local.id}` });
       if (!session.url) throw new Error('Stripe Checkout did not return a URL');
       await this.prisma.billingCheckoutSession.update({
         where: { id: local.id },
@@ -80,10 +103,7 @@ export class BillingService {
       });
       return { url: session.url, sessionId: session.id };
     } catch (error) {
-      if (error instanceof ServiceUnavailableException) throw error;
-      if (localId) {
-        await this.prisma.billingCheckoutSession.update({ where: { id: localId }, data: { status: 'FAILED' } }).catch(() => undefined);
-      }
+      if (error instanceof ServiceUnavailableException || error instanceof BadRequestException) throw error;
       throw new InternalServerErrorException({ code: 'BILLING_CHECKOUT_FAILED', message: 'Unable to start checkout' });
     }
   }
@@ -123,7 +143,7 @@ export class BillingService {
 
   private billingConfigured(): boolean {
     const prices = this.config.get<Record<string, string>>('billing.prices');
-    return Boolean(this.stripe && prices && Object.values(prices).some(Boolean));
+    return Boolean(this.config.get<boolean>('billing.enabled') && this.stripe && prices && Object.values(prices).every(Boolean));
   }
 
   async handleWebhook(rawBody: Buffer | undefined, signature: string | undefined): Promise<{ received: true; duplicate?: true }> {
@@ -310,7 +330,10 @@ export class BillingService {
   private async getOrCreateCustomer(stripe: Stripe, organizationId: string, email: string): Promise<string> {
     const existing = await this.prisma.billingCustomer.findUnique({ where: { organizationId } });
     if (existing) return existing.stripeCustomerId;
-    const customer = await stripe.customers.create({ email, metadata: { organizationId } });
+    const customer = await stripe.customers.create(
+      { email, metadata: { organizationId } },
+      { idempotencyKey: `billing-customer:${organizationId}` },
+    );
     const record = await this.prisma.billingCustomer.upsert({
       where: { organizationId },
       create: { organizationId, stripeCustomerId: customer.id },
@@ -320,7 +343,7 @@ export class BillingService {
   }
 
   private requireStripe(): Stripe {
-    if (!this.stripe) throw new ServiceUnavailableException({ code: 'BILLING_NOT_CONFIGURED', message: 'Billing is not configured' });
+    if (!this.config.get<boolean>('billing.enabled') || !this.stripe) throw new ServiceUnavailableException({ code: 'BILLING_NOT_CONFIGURED', message: 'Billing is not configured' });
     return this.stripe;
   }
 

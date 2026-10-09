@@ -18,7 +18,7 @@ export class BillingController {
     @Param('organizationId') organizationId: string,
     @Body() dto: CreateCheckoutSessionDto,
   ): Promise<CreateBillingCheckoutSessionResponse> {
-    return this.billing.createCheckoutSession(user, organizationId, dto.selectionId);
+    return this.billing.createCheckoutSession(user, organizationId, dto.selectionId, dto.operationId);
   }
 
   @Get('checkout-session/:sessionId')

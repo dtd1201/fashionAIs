@@ -11,5 +11,19 @@
   ],
   "vars": {
     "ALLOWED_ORIGINS": "http://localhost:3000,https://localhost:8443"
+  },
+  "env": {
+    "production": {
+      "name": "fashionais-r2-gateway-production",
+      "vars": {
+        "ALLOWED_ORIGINS": "https://app.example.com"
+      },
+      "r2_buckets": [
+        {
+          "binding": "ASSETS_BUCKET",
+          "bucket_name": "fashionais-assets"
+        }
+      ]
+    }
   }
 }

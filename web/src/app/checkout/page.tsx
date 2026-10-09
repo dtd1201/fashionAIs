@@ -33,10 +33,14 @@ function CheckoutContent() {
     setLoading(true);
     setError('');
     try {
+      const operationKey = `fashionais:checkout:${auth.currentOrganization.id}:${choice.id}`;
+      const operationId = sessionStorage.getItem(operationKey) ?? crypto.randomUUID();
+      sessionStorage.setItem(operationKey, operationId);
       const result = await auth.request<CreateBillingCheckoutSessionResponse>(
         `/organizations/${auth.currentOrganization.id}/billing/checkout-session`,
-        { method: 'POST', body: JSON.stringify({ selectionId: choice.id as BillingSelectionId }) },
+        { method: 'POST', body: JSON.stringify({ selectionId: choice.id as BillingSelectionId, operationId }) },
       );
+      sessionStorage.removeItem(operationKey);
       window.location.assign(result.url);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to start checkout');

@@ -17,6 +17,38 @@ function selectedProviderCredential(provider: string): Joi.Schema {
   });
 }
 
+const PLACEHOLDER_PATTERN = /(change[-_ ]?me|replace[-_ ]?with|development|example|local[-_ ]?smoke)/i;
+
+function hostname(value: string): string | undefined {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopback(value: string): boolean {
+  const host = hostname(value) ?? value.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+function isUnsafeSecret(value: string): boolean {
+  return PLACEHOLDER_PATTERN.test(value) || new Set(value).size < 8;
+}
+
+function isPlaceholderValue(value: string): boolean {
+  return PLACEHOLDER_PATTERN.test(value) || ['assets', 'bucket', 'your-bucket'].includes(value.toLowerCase());
+}
+
+function isHttpsOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.origin === value;
+  } catch {
+    return false;
+  }
+}
+
 export const environmentSchema = Joi.object({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
@@ -28,6 +60,7 @@ export const environmentSchema = Joi.object({
   REDIS_HOST: Joi.string().hostname().required(),
   REDIS_PORT: Joi.number().port().default(6379),
   REDIS_PASSWORD: Joi.string().allow('').optional(),
+  ALLOW_LOCAL_PRODUCTION_SMOKE: Joi.boolean().truthy('true').falsy('false').default(false),
   JWT_ACCESS_SECRET: Joi.string().min(32).required(),
   JWT_REFRESH_SECRET: Joi.string()
     .min(32)
@@ -138,6 +171,7 @@ export const environmentSchema = Joi.object({
     .valid('mock', 'fashn', 'openai', 'gemini')
     .optional(),
   AI_IMAGE_EDITING_PROVIDER: Joi.string().valid('mock').optional(),
+  ALLOW_MOCK_AI_IN_PRODUCTION: Joi.boolean().truthy('true').falsy('false').default(false),
   AI_PROVIDER_TIMEOUT_MS: Joi.number().integer().min(100).max(600000).default(30000),
   FASHN_API_KEY: selectedProviderCredential('fashn'),
   FASHN_BASE_URL: Joi.string().uri({ scheme: ['https'] }).default('https://api.fashn.ai/v1'),
@@ -167,14 +201,16 @@ export const environmentSchema = Joi.object({
   AI_JOB_MAX_ATTEMPTS: Joi.number().integer().min(1).max(10).default(3),
   AI_JOB_BACKOFF_MS: Joi.number().integer().min(100).max(300000).default(5000),
   AI_WORKER_CONCURRENCY: Joi.number().integer().min(1).max(50).default(2),
+  AI_JOB_LEASE_MS: Joi.number().integer().min(30000).max(3600000).default(60000),
   AI_JOB_REMOVE_COMPLETE_AGE: Joi.number().integer().min(60).max(2592000).default(86400),
   AI_JOB_REMOVE_FAIL_AGE: Joi.number().integer().min(60).max(7776000).default(604800),
   AI_QUEUE_PREFIX: Joi.string().pattern(/^[A-Za-z0-9:_-]+$/).default('fashionais'),
   MOCK_AI_DELAY_MS: Joi.number().integer().min(0).max(30000).default(100),
-  STRIPE_SECRET_KEY: Joi.string().allow('').optional(),
-  STRIPE_WEBHOOK_SECRET: Joi.string().allow('').optional(),
-  STRIPE_SUCCESS_URL: Joi.when('NODE_ENV', { is: 'production', then: Joi.string().uri({ scheme: ['https'] }).required(), otherwise: Joi.string().uri({ scheme: ['http', 'https'] }).default('http://localhost:3000/billing/success') }),
-  STRIPE_CANCEL_URL: Joi.when('NODE_ENV', { is: 'production', then: Joi.string().uri({ scheme: ['https'] }).required(), otherwise: Joi.string().uri({ scheme: ['http', 'https'] }).default('http://localhost:3000/pricing') }),
+  STRIPE_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  STRIPE_SECRET_KEY: Joi.when('STRIPE_ENABLED', { is: true, then: Joi.string().min(1).required(), otherwise: Joi.string().allow('').optional() }),
+  STRIPE_WEBHOOK_SECRET: Joi.when('STRIPE_ENABLED', { is: true, then: Joi.string().min(1).required(), otherwise: Joi.string().allow('').optional() }),
+  STRIPE_SUCCESS_URL: Joi.when('STRIPE_ENABLED', { is: true, then: Joi.string().uri({ scheme: ['http', 'https'] }).required(), otherwise: Joi.string().uri({ scheme: ['http', 'https'] }).default('http://localhost:3000/billing/success') }),
+  STRIPE_CANCEL_URL: Joi.when('STRIPE_ENABLED', { is: true, then: Joi.string().uri({ scheme: ['http', 'https'] }).required(), otherwise: Joi.string().uri({ scheme: ['http', 'https'] }).default('http://localhost:3000/pricing') }),
   STRIPE_PRICE_STARTER: Joi.string().allow('').optional(),
   STRIPE_PRICE_CREATOR: Joi.string().allow('').optional(),
   STRIPE_PRICE_STUDIO: Joi.string().allow('').optional(),
@@ -182,4 +218,44 @@ export const environmentSchema = Joi.object({
   STRIPE_PRICE_TOPUP_500: Joi.string().allow('').optional(),
   STRIPE_PRICE_TOPUP_1000: Joi.string().allow('').optional(),
   STRIPE_PRICE_TOPUP_5000: Joi.string().allow('').optional(),
+}).custom((env: Record<string, unknown>, helpers) => {
+  if (env.NODE_ENV !== 'production') return env;
+  const allowLocalSmoke = env.ALLOW_LOCAL_PRODUCTION_SMOKE === true;
+  const invalid = () => helpers.error('any.invalid');
+  const text = (key: string) => {
+    const value = env[key];
+    return typeof value === 'string' || typeof value === 'number'
+      ? String(value).trim()
+      : '';
+  };
+
+  if (!text('REDIS_PASSWORD')) return invalid();
+  if (!allowLocalSmoke && [text('JWT_ACCESS_SECRET'), text('JWT_REFRESH_SECRET')].some(isUnsafeSecret)) return invalid();
+  if (text('JWT_ACCESS_SECRET') === text('JWT_REFRESH_SECRET')) return invalid();
+  if (!allowLocalSmoke) {
+    const origins = text('CORS_ORIGINS').split(',').map((origin) => origin.trim()).filter(Boolean);
+    if (origins.some((origin) => !isHttpsOrigin(origin) || isLoopback(origin))) return invalid();
+    if (isLoopback(text('DATABASE_URL')) || isLoopback(text('REDIS_HOST'))) return invalid();
+  }
+  if (text('R2_TRANSPORT') === 'worker') {
+    const gatewayUrl = text('R2_GATEWAY_BASE_URL');
+    if (!gatewayUrl.startsWith('https://') || (!allowLocalSmoke && isLoopback(gatewayUrl))) return invalid();
+    if (!text('R2_BUCKET') || (!allowLocalSmoke && isPlaceholderValue(text('R2_BUCKET')))) return invalid();
+    if (!allowLocalSmoke && isUnsafeSecret(text('R2_GATEWAY_SIGNING_SECRET'))) return invalid();
+  }
+  const virtualTryOnProvider = text('AI_VIRTUAL_TRY_ON_PROVIDER') || text('AI_DEFAULT_PROVIDER');
+  if (virtualTryOnProvider === 'mock' && env.ALLOW_MOCK_AI_IN_PRODUCTION !== true) return invalid();
+  if (env.STRIPE_ENABLED === true) {
+    const required = [
+      'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_SUCCESS_URL', 'STRIPE_CANCEL_URL',
+      'STRIPE_PRICE_STARTER', 'STRIPE_PRICE_CREATOR', 'STRIPE_PRICE_STUDIO',
+      'STRIPE_PRICE_TOPUP_100', 'STRIPE_PRICE_TOPUP_500', 'STRIPE_PRICE_TOPUP_1000', 'STRIPE_PRICE_TOPUP_5000',
+    ];
+    if (required.some((key) => !text(key))) return invalid();
+    const secretAndPriceKeys = required.filter((key) => !key.endsWith('_URL'));
+    if (secretAndPriceKeys.some((key) => PLACEHOLDER_PATTERN.test(text(key)))) return invalid();
+    if (['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'].some((key) => isUnsafeSecret(text(key)))) return invalid();
+    if (!text('STRIPE_SUCCESS_URL').startsWith('https://') || !text('STRIPE_CANCEL_URL').startsWith('https://')) return invalid();
+  }
+  return env;
 });

@@ -37,7 +37,11 @@ function harness() {
     attempt: 0,
     maxAttempts: 3,
     startedAt: null as Date | null,
+    leaseOwner: null as string | null,
+    leaseExpiresAt: null as Date | null,
+    heartbeatAt: null as Date | null,
     finishedAt: null as Date | null,
+    updatedAt: now,
     errorCode: null as string | null,
     errorMessage: null as string | null,
   };
@@ -48,7 +52,34 @@ function harness() {
     data: Record<string, unknown>,
   ) => {
     Object.assign(target, data);
+    target.updatedAt = new Date();
     return target;
+  };
+  const matches = (
+    target: Record<string, unknown>,
+    where: Record<string, unknown>,
+  ): boolean => {
+    if (Array.isArray(where.OR)) {
+      const branches = where.OR as Array<Record<string, unknown>>;
+      if (!branches.some((branch) => matches(target, branch))) return false;
+    }
+    for (const [key, expected] of Object.entries(where)) {
+      if (key === 'OR' || key === 'id' || key === 'generationId') continue;
+      const actual = target[key];
+      if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+        const comparison = expected as { in?: unknown[]; lte?: Date };
+        if (comparison.in && !comparison.in.includes(actual)) return false;
+        if (
+          comparison.lte &&
+          (!(actual instanceof Date) || actual.getTime() > comparison.lte.getTime())
+        ) {
+          return false;
+        }
+      } else if (actual !== expected) {
+        return false;
+      }
+    }
+    return true;
   };
   const transactionClient: { value?: unknown } = {};
   const prisma = {
@@ -59,15 +90,10 @@ function harness() {
           where,
           data,
         }: {
-          where: { status?: string | { in: string[] } };
+          where: Record<string, unknown>;
           data: Record<string, unknown>;
         }) => {
-          const allowed =
-            !where.status ||
-            (typeof where.status === 'string'
-              ? job.status === where.status
-              : where.status.in.includes(job.status));
-          if (!allowed) return { count: 0 };
+          if (!matches(job, where)) return { count: 0 };
           apply(job, data);
           return { count: 1 };
         },
@@ -82,15 +108,10 @@ function harness() {
           where,
           data,
         }: {
-          where: { status?: string | { in: string[] } };
+          where: Record<string, unknown>;
           data: Record<string, unknown>;
         }) => {
-          const allowed =
-            !where.status ||
-            (typeof where.status === 'string'
-              ? generation.status === where.status
-              : where.status.in.includes(generation.status));
-          if (!allowed) return { count: 0 };
+          if (!matches(generation, where)) return { count: 0 };
           apply(generation, data);
           return { count: 1 };
         },
@@ -155,9 +176,11 @@ function harness() {
     deleteObject: jest.fn().mockResolvedValue(undefined),
   };
   const config = {
-    getOrThrow: jest.fn((key: string) =>
-      key === 'storage.bucket' ? 'bucket' : 30000,
-    ),
+    getOrThrow: jest.fn((key: string) => {
+      if (key === 'storage.bucket') return 'bucket';
+      if (key === 'ai.jobLeaseMs') return 60;
+      return 30000;
+    }),
   };
   const credits = { refundGeneration: jest.fn().mockResolvedValue(true) };
   return {
@@ -175,6 +198,7 @@ function harness() {
     outputAssets,
     outputs,
     credits,
+    prisma,
   };
 }
 
@@ -303,5 +327,92 @@ describe('AiGenerationProcessor', () => {
     expect(state.outputs).toHaveLength(1);
     expect(state.outputAssets).toHaveLength(1);
     expect(state.generation.status).toBe('COMPLETED');
+  });
+
+  it('does not steal an actively heartbeating PROCESSING job', async () => {
+    const state = harness();
+    let release!: () => void;
+    state.provider.generate.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ outputs: [] });
+        }),
+    );
+    const first = state.processor.process(
+      { generationId: 'generation-id', aiJobId: 'job-id' },
+      1,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const second = state.processor.process(
+      { generationId: 'generation-id', aiJobId: 'job-id' },
+      2,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(state.provider.generate).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([first, second]);
+    expect(state.provider.generate).toHaveBeenCalledTimes(1);
+    expect(state.job.status).toBe('SUCCEEDED');
+  });
+
+  it('reclaims a stale PROCESSING job and reuses its provider job id', async () => {
+    const state = harness();
+    state.job.status = 'PROCESSING';
+    state.generation.status = 'PROCESSING';
+    state.job.leaseOwner = 'dead-worker';
+    state.job.leaseExpiresAt = new Date(Date.now() - 1000);
+    Object.assign(state.job, { providerJobId: 'persisted-fashn-id' });
+
+    await state.processor.process(
+      { generationId: 'generation-id', aiJobId: 'job-id' },
+      2,
+    );
+
+    expect(state.provider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({ providerJobId: 'persisted-fashn-id' }),
+    );
+    expect(state.job.status).toBe('SUCCEEDED');
+  });
+
+  it('allows only one concurrent stale reclaim and keeps output persistence idempotent', async () => {
+    const state = harness();
+    state.job.status = 'PROCESSING';
+    state.generation.status = 'PROCESSING';
+    state.job.leaseOwner = 'dead-worker';
+    state.job.leaseExpiresAt = new Date(Date.now() - 1000);
+
+    await Promise.all([
+      state.processor.process(
+        { generationId: 'generation-id', aiJobId: 'job-id' },
+        2,
+      ),
+      state.processor.process(
+        { generationId: 'generation-id', aiJobId: 'job-id' },
+        2,
+      ),
+    ]);
+
+    expect(state.provider.generate).toHaveBeenCalledTimes(1);
+    expect(state.storage.putObject).toHaveBeenCalledTimes(1);
+    expect(state.outputAssets).toHaveLength(1);
+    expect(state.outputs).toHaveLength(1);
+  });
+
+  it('does not double-refund or reclaim terminal jobs', async () => {
+    const state = harness();
+    state.provider.generate.mockRejectedValue(
+      new AiProviderPermanentError('permanent'),
+    );
+    await state.processor.process(
+      { generationId: 'generation-id', aiJobId: 'job-id' },
+      1,
+    );
+    await state.processor.process(
+      { generationId: 'generation-id', aiJobId: 'job-id' },
+      2,
+    );
+    expect(state.provider.generate).toHaveBeenCalledTimes(1);
+    expect(state.credits.refundGeneration).toHaveBeenCalledTimes(1);
+    expect(state.job.status).toBe('FAILED');
   });
 });

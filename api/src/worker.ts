@@ -11,6 +11,10 @@ import { AI_GENERATION_QUEUE } from './queue/queue.constants';
 import { DatabaseModule } from './database/database.module';
 import { AiModule } from './ai/ai.module';
 import { CreditsModule } from './credits/credits.module';
+import { PrismaService } from './database/prisma.service';
+import { QueueModule } from './queue/queue.module';
+import { QueueService } from './queue/queue.service';
+import { reconcileRecoverableJobs } from './ai/ai-job-recovery';
 import {
   AiGenerationProcessor,
   type AiGenerationJobPayload,
@@ -26,6 +30,7 @@ import {
     DatabaseModule,
     AiModule,
     CreditsModule,
+    QueueModule,
   ],
 })
 class WorkerModule {}
@@ -34,6 +39,11 @@ async function bootstrap(): Promise<void> {
   const context = await NestFactory.createApplicationContext(WorkerModule);
   const config = context.get(ConfigService);
   const processor = context.get(AiGenerationProcessor);
+  await reconcileRecoverableJobs(
+    context.get(PrismaService),
+    context.get(QueueService),
+    config,
+  );
   const worker = new Worker<AiGenerationJobPayload>(
     AI_GENERATION_QUEUE,
     (job) =>
