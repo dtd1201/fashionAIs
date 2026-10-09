@@ -2,7 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: light; --cream: #f5f0e6; --ink: #171815; --terracotta: #ad6649; }
+:root {
+  color-scheme: light;
+  --cream: #f5f0e6;
+  --paper: #fbf8f1;
+  --ink: #171815;
+  --muted: #716d65;
+  --line: #d6d0c5;
+  --terracotta: #a95738;
+  --terracotta-dark: #823d27;
+  --focus: #9f4f32;
+  --radius-control: .5rem;
+  --radius-card: .75rem;
+}
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
@@ -11,8 +23,13 @@ body {
   background: linear-gradient(rgba(23,24,21,.025) 1px, transparent 1px), var(--cream);
   background-size: 100% 32px;
   min-height: 100vh;
-  font-family: "Avenir Next", "Century Gothic", sans-serif;
+  font-family: "Avenir Next", Avenir, "Century Gothic", Futura, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
 }
+button, input, textarea, select { font: inherit; }
+button, summary, a { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 ::selection { background: #1c1917; color: white; }
 .font-serif, .display-title, .section-title { font-family: "Bodoni 72", Didot, "Times New Roman", serif; }
 .landing-shell { width: min(100% - 3rem, 1440px); margin-inline: auto; }
@@ -42,13 +59,20 @@ body {
 @keyframes editorial-rise { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes studio-shimmer { from { transform: translateX(-130%); } to { transform: translateX(230%); } }
 @media (max-width: 767px) { .landing-shell { width: min(100% - 2rem, 1440px); }.gallery-grid { grid-template-columns: repeat(2, 1fr); grid-auto-rows: 130px; }.gallery-piece { grid-column: span 1 !important; grid-row: span 2 !important; }.gallery-piece-1, .gallery-piece-6 { grid-column: span 2 !important; }.section-title { font-size: clamp(3rem, 15vw, 5rem); } }
-.studio-grid { display: grid; height: 100%; min-height: 0; grid-template-columns: 320px minmax(0, 1fr) 290px; overflow: hidden; }
+.studio-grid { display: grid; height: 100%; min-height: 0; grid-template-columns: 318px minmax(380px, 1fr) 304px; overflow: hidden; }
 .studio-panel { min-height: 0; background: #f8f5ee; }
 .studio-label { font-size: .65rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
-.studio-input { display: block; width: 100%; border: 1px solid #d6d3d1; background: white; padding: .65rem .75rem; font-size: .75rem; font-weight: 400; outline: none; }
-.studio-input:focus { border-color: #1c1917; }
-.studio-canvas { display: flex; height: 100%; min-height: 0; align-items: center; justify-content: center; overflow: hidden; padding: 2rem; background: linear-gradient(90deg, rgba(28,25,23,.035) 1px, transparent 1px), linear-gradient(rgba(28,25,23,.035) 1px, transparent 1px), #ece8df; background-size: 24px 24px; }
+.studio-input { display: block; width: 100%; border: 1px solid var(--line); border-radius: var(--radius-control); background: white; padding: .7rem .8rem; font-size: .8125rem; font-weight: 400; outline: none; transition: border-color .18s ease, box-shadow .18s ease; }
+.studio-input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(169,87,56,.12); }
+.studio-input:disabled { cursor: not-allowed; background: #eeeae2; color: #8b867e; }
+.surface-card { border: 1px solid var(--line); border-radius: var(--radius-card); background: rgba(251,248,241,.88); }
+.status-badge { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.72); padding: .3rem .55rem; font-size: .625rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.page-lede { max-width: 42rem; color: var(--muted); font-size: .9375rem; line-height: 1.7; }
+.studio-canvas { display: flex; height: 100%; min-height: 0; align-items: center; justify-content: center; overflow: hidden; padding: clamp(1.25rem, 3vw, 3rem); background: linear-gradient(90deg, rgba(28,25,23,.03) 1px, transparent 1px), linear-gradient(rgba(28,25,23,.03) 1px, transparent 1px), #e9e4da; background-size: 28px 28px; }
 .checkout-input { display: block; height: 3rem; width: 100%; border: 1px solid #d6d3d1; background: #f8f5ee; padding: 0 .8rem; font-size: .8rem; color: #78716c; }
 .studio-root { height: 100dvh; overflow: hidden; }
-@media (max-width: 1100px) { .studio-grid { grid-template-columns: 310px minmax(0, 1fr); }.studio-grid > aside:last-child { grid-column: 1 / -1; display: grid; max-height: 340px; border-left: 0; border-top: 1px solid #d6d3d1; }.studio-grid > aside:last-child > div:last-child { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (max-width: 1180px) { .studio-grid { grid-template-columns: 292px minmax(360px, 1fr) 250px; } }
+@media (max-width: 960px) { .studio-root { height: auto; min-height: 100dvh; overflow: visible; }.studio-root > div:nth-child(3) { overflow: visible; }.studio-grid { display: grid; height: auto; grid-template-columns: 300px minmax(0, 1fr); overflow: visible; }.studio-grid > aside:last-child { grid-column: 1 / -1; min-height: 360px; max-height: 460px; border-left: 0; border-top: 1px solid #d6d3d1; }.studio-grid > aside:last-child > div:last-child { grid-template-columns: repeat(4, minmax(0, 1fr)); }.studio-canvas { min-height: 680px; } }
 @media (max-width: 767px) { .studio-root { height: auto; min-height: 100dvh; overflow: visible; }.studio-root > div:nth-child(3) { overflow: visible; }.studio-grid { display: flex; height: auto; overflow: visible; flex-direction: column; }.studio-panel { border: 0; border-bottom: 1px solid #d6d3d1; }.studio-canvas { min-height: 520px; height: auto; order: 2; }.studio-grid > aside:first-child { order: 1; }.studio-grid > aside:last-child { order: 3; display: block; max-height: none; }.studio-grid > aside:last-child > div:last-child { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }.studio-grid aside:first-child > div:nth-child(2) { max-height: none; overflow: visible; } }
+@media (max-width: 640px) { .studio-canvas { min-height: 430px; padding: 1.25rem; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }

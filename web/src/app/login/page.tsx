@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useState, type FormEvent, type MouseEvent } from 'react';
 import { useAuth } from '@/components/auth-provider';
 import { Button } from '@/components/ui/button';
+import { AuthField, AuthShell } from '@/components/auth-shell';
 import { safeReturnTo } from '@/lib/return-to';
 
 export default function LoginPage() {
@@ -14,7 +15,9 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   function continueToRegister(event: MouseEvent<HTMLAnchorElement>): void {
     event.preventDefault();
-    const returnTo = safeReturnTo(new URLSearchParams(window.location.search).get('returnTo'));
+    const returnTo = safeReturnTo(
+      new URLSearchParams(window.location.search).get('returnTo'),
+    );
     router.push(`/register?returnTo=${encodeURIComponent(returnTo)}`);
   }
 
@@ -24,8 +27,15 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
-      await login({ email: String(form.get('email')), password: String(form.get('password')) });
-      router.replace(safeReturnTo(new URLSearchParams(window.location.search).get('returnTo')));
+      await login({
+        email: String(form.get('email')),
+        password: String(form.get('password')),
+      });
+      router.replace(
+        safeReturnTo(
+          new URLSearchParams(window.location.search).get('returnTo'),
+        ),
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to sign in');
     } finally {
@@ -34,20 +44,51 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="mx-auto max-w-md px-6 py-16">
-      <h1 className="font-serif text-4xl font-black">Welcome back</h1>
-      <p className="mt-2 text-stone-600">Sign in to your FashionAIs workspace.</p>
-      <form onSubmit={submit} className="mt-8 space-y-5 rounded-3xl border border-stone-200 bg-white/80 p-7">
-        <Field label="Email" name="email" type="email" autoComplete="email" />
-        <Field label="Password" name="password" type="password" autoComplete="current-password" />
-        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-        <Button className="w-full" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</Button>
+    <AuthShell
+      eyebrow="Welcome back"
+      title="Return to your studio."
+      description="Sign in to continue creating and access your organization workspace."
+      footer={
+        <>
+          New here?{' '}
+          <Link
+            className="font-bold text-stone-950 underline decoration-stone-300 underline-offset-4"
+            href="/register"
+            onClick={continueToRegister}
+          >
+            Create an account
+          </Link>
+        </>
+      }
+    >
+      <form
+        onSubmit={submit}
+        className="surface-card mt-9 space-y-5 p-6 sm:p-8"
+      >
+        <AuthField
+          label="Email address"
+          name="email"
+          type="email"
+          autoComplete="email"
+        />
+        <AuthField
+          label="Password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+        />
+        {error && (
+          <p
+            role="alert"
+            className="border-l-2 border-red-700 bg-red-50 px-4 py-3 text-sm text-red-800"
+          >
+            {error}
+          </p>
+        )}
+        <Button className="h-12 w-full" disabled={loading} aria-busy={loading}>
+          {loading ? 'Signing in...' : 'Sign in'}
+        </Button>
       </form>
-      <p className="mt-5 text-sm text-stone-600">New here? <Link className="font-bold text-stone-950" href="/register" onClick={continueToRegister}>Create an account</Link></p>
-    </main>
+    </AuthShell>
   );
-}
-
-function Field(props: { label: string; name: string; type: string; autoComplete: string }) {
-  return <label className="block text-sm font-semibold">{props.label}<input {...props} required className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-4 py-3 font-normal outline-none focus:border-amber-700" /></label>;
 }

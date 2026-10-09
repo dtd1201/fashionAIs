@@ -17,9 +17,9 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
 
   return (
     <details className="group relative">
-      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-full border border-stone-300 bg-white/70 px-3 py-2 text-xs font-semibold hover:border-stone-500">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg border border-stone-300 bg-white/70 px-3 py-2 text-xs font-semibold hover:border-stone-500">
         <span className={compact ? 'hidden lg:block max-w-32 truncate' : 'hidden sm:block max-w-40 truncate'}>{user.email}</span>
-        <span className="grid h-6 w-6 place-items-center rounded-full bg-stone-900 text-[10px] font-bold text-white">{user.email.slice(0, 1).toUpperCase()}</span>
+        <span className="grid h-6 w-6 place-items-center rounded-md bg-stone-900 text-[10px] font-bold text-white">{user.email.slice(0, 1).toUpperCase()}</span>
         <ChevronDown size={13} className="transition group-open:rotate-180" />
       </summary>
       <div className="absolute right-0 z-[90] mt-2 w-56 overflow-hidden rounded-xl border border-stone-300 bg-[#f8f5ee] p-2 shadow-2xl">

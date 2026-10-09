@@ -1,7 +1,7 @@
 'use client';
 
 import type { AssetListResponse, AssetView } from '@fashion-ais/types';
-import { Images, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Images, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@/components/auth-provider';
@@ -9,16 +9,262 @@ import { SecureAssetImage } from '@/components/secure-asset-image';
 import { Button } from '@/components/ui/button';
 import { ApiClientError } from '@/lib/api/client';
 import { loadAssetAccessUrl } from '@/lib/studio-flow';
+import { assetDisplayName, humanizeEnum } from '@/lib/presentation';
 
 type Filter = 'ALL' | 'PERSON' | 'GARMENT' | 'GENERATED';
 
 export default function LibraryPage() {
   const { status, currentOrganization, request } = useAuth();
-  const [assets, setAssets] = useState<AssetView[]>([]); const [filter, setFilter] = useState<Filter>('ALL'); const [cursor, setCursor] = useState<string | null>(null); const [nextCursor, setNextCursor] = useState<string | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState<string | null>(null); const [deleting, setDeleting] = useState<AssetView | null>(null);
-  const load = useCallback(async () => { if (!currentOrganization) return; setLoading(true); try { const source = filter === 'GENERATED' ? '&source=GENERATED' : ''; const result = await request<AssetListResponse>(`/organizations/${currentOrganization.id}/assets?status=READY&kind=IMAGE&limit=24${source}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); setAssets(result.items.filter((asset) => filter === 'PERSON' ? asset.inputRoles?.includes('PERSON') : filter === 'GARMENT' ? asset.inputRoles?.includes('GARMENT') : true)); setNextCursor(result.pageInfo.nextCursor); setError(null); } catch { setError('We could not load the asset library.'); } finally { setLoading(false); } }, [currentOrganization, cursor, filter, request]);
-  useEffect(() => { if (status === 'authenticated' && currentOrganization) void Promise.resolve().then(load); }, [currentOrganization, load, status]);
-  async function open(asset: AssetView) { if (!currentOrganization) return; const url = await loadAssetAccessUrl({ organizationId: currentOrganization.id, assetId: asset.id, request }); window.open(url, '_blank', 'noopener,noreferrer'); }
-  async function remove() { if (!currentOrganization || !deleting) return; try { await request(`/organizations/${currentOrganization.id}/assets/${deleting.id}`, { method: 'DELETE' }); setDeleting(null); await load(); } catch (cause) { setError(cause instanceof ApiClientError && cause.code === 'ASSET_REFERENCED' ? 'This asset is part of generation history and cannot be deleted.' : 'The asset could not be deleted.'); setDeleting(null); } }
-  if (status === 'anonymous') return <main className="grid min-h-[70vh] place-items-center text-center"><div><h1 className="font-serif text-5xl">Your library is private</h1><Button asChild className="mt-6"><Link href="/login?returnTo=/library">Sign in</Link></Button></div></main>;
-  return <main className="landing-shell py-12 lg:py-16"><header className="flex flex-col justify-between gap-6 border-b border-stone-300 pb-8 md:flex-row md:items-end"><div><p className="eyebrow text-terracotta">Workspace archive</p><h1 className="mt-3 font-serif text-5xl font-black md:text-7xl">Asset Library</h1><p className="mt-3 text-sm text-stone-500">Ready images available to your active organization.</p></div><Button asChild><Link href="/studio">Upload in Studio</Link></Button></header><div className="mt-8 flex flex-wrap gap-2">{(['ALL', 'PERSON', 'GARMENT', 'GENERATED'] as const).map((value) => <button key={value} onClick={() => { setFilter(value); setCursor(null); }} className={`rounded-full px-4 py-2 text-xs font-bold ${filter === value ? 'bg-stone-950 text-white' : 'border border-stone-300 bg-white/60'}`}>{value[0] + value.slice(1).toLowerCase()}</button>)}</div>{error && <p role="alert" className="mt-6 border border-red-300 bg-red-50 p-4 text-sm text-red-800">{error}</p>}{loading ? <div className="mt-8 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4">{Array.from({ length: 8 }, (_, i) => <div key={i} className="aspect-[4/5] animate-pulse rounded-2xl bg-stone-200" />)}</div> : assets.length === 0 ? <section className="mt-10 grid min-h-80 place-items-center rounded-3xl border border-dashed border-stone-400 text-center"><div><Images className="mx-auto text-terracotta" /><h2 className="mt-4 font-serif text-3xl">No assets here yet</h2><Button asChild className="mt-6"><Link href="/studio">Go to Studio</Link></Button></div></section> : <div className="mt-8 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4">{assets.map((asset) => <article key={asset.id} className="group overflow-hidden rounded-2xl border border-stone-300 bg-[#f8f5ee]"><div className="relative aspect-[4/5]"><SecureAssetImage assetId={asset.id} alt={asset.originalFileName} className="h-full w-full object-cover" /><span className="absolute left-3 top-3 rounded-full bg-stone-950/85 px-2 py-1 text-[9px] font-bold text-white">{asset.source ?? 'UPLOADED'}</span><MoreHorizontal className="absolute right-3 top-3 rounded-full bg-white p-1" /></div><div className="p-4"><p className="truncate text-sm font-bold">{asset.originalFileName}</p><p className="mt-1 text-[10px] text-stone-500">{asset.mimeType} · {asset.width && asset.height ? `${asset.width}×${asset.height} · ` : ''}{new Date(asset.createdAt).toLocaleDateString()}</p><div className="mt-4 grid grid-cols-2 gap-2"><Button asChild className="h-8 px-2 text-[10px]"><Link href={`/studio?person=${asset.id}`}>Use as Person</Link></Button><Button asChild variant="outline" className="h-8 px-2 text-[10px]"><Link href={`/studio?garment=${asset.id}`}>Use as Garment</Link></Button><button onClick={() => void open(asset)} className="text-xs font-bold">Open</button><button onClick={() => setDeleting(asset)} className="flex items-center justify-center gap-1 text-xs font-bold text-red-800"><Trash2 size={13} /> Delete</button></div>{asset.generationId && <Link href={`/generations/${asset.generationId}`} className="mt-3 block text-center text-[10px] font-bold uppercase tracking-wider text-terracotta">View generation</Link>}</div></article>)}</div>}<div className="mt-10 flex justify-between"><Button variant="outline" disabled={!cursor} onClick={() => setCursor(null)}>First page</Button><Button disabled={!nextCursor} onClick={() => setCursor(nextCursor)}>Next page</Button></div>{deleting && <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/60 p-4" role="dialog" aria-modal="true"><div className="w-full max-w-md rounded-2xl bg-[#f8f5ee] p-7"><h2 className="font-serif text-3xl">Delete this asset?</h2><p className="mt-3 text-sm leading-6 text-stone-600">This removes the stored image. Assets used in generation history are protected.</p><div className="mt-7 flex justify-end gap-3"><Button variant="outline" onClick={() => setDeleting(null)}>Keep asset</Button><Button variant="danger" onClick={() => void remove()}>Delete</Button></div></div></div>}</main>;
+  const [assets, setAssets] = useState<AssetView[]>([]);
+  const [filter, setFilter] = useState<Filter>('ALL');
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<AssetView | null>(null);
+  const load = useCallback(async () => {
+    if (!currentOrganization) return;
+    setLoading(true);
+    try {
+      const source = filter === 'GENERATED' ? '&source=GENERATED' : '';
+      const result = await request<AssetListResponse>(
+        `/organizations/${currentOrganization.id}/assets?status=READY&kind=IMAGE&limit=24${source}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      );
+      setAssets(
+        result.items.filter((asset) =>
+          filter === 'PERSON'
+            ? asset.inputRoles?.includes('PERSON')
+            : filter === 'GARMENT'
+              ? asset.inputRoles?.includes('GARMENT')
+              : true,
+        ),
+      );
+      setNextCursor(result.pageInfo.nextCursor);
+      setError(null);
+    } catch {
+      setError('We could not load the asset library.');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentOrganization, cursor, filter, request]);
+  useEffect(() => {
+    if (status === 'authenticated' && currentOrganization)
+      void Promise.resolve().then(load);
+  }, [currentOrganization, load, status]);
+  async function open(asset: AssetView) {
+    if (!currentOrganization) return;
+    const url = await loadAssetAccessUrl({
+      organizationId: currentOrganization.id,
+      assetId: asset.id,
+      request,
+    });
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+  async function remove() {
+    if (!currentOrganization || !deleting) return;
+    try {
+      await request(
+        `/organizations/${currentOrganization.id}/assets/${deleting.id}`,
+        { method: 'DELETE' },
+      );
+      setDeleting(null);
+      await load();
+    } catch (cause) {
+      setError(
+        cause instanceof ApiClientError && cause.code === 'ASSET_REFERENCED'
+          ? 'This asset is part of generation history and cannot be deleted.'
+          : 'The asset could not be deleted.',
+      );
+      setDeleting(null);
+    }
+  }
+  if (status === 'anonymous')
+    return (
+      <main className="grid min-h-[70vh] place-items-center text-center">
+        <div>
+          <h1 className="font-serif text-5xl">Your library is private</h1>
+          <Button asChild className="mt-6">
+            <Link href="/login?returnTo=/library">Sign in</Link>
+          </Button>
+        </div>
+      </main>
+    );
+  return (
+    <main className="landing-shell py-12 lg:py-16">
+      <header className="flex flex-col justify-between gap-6 border-b border-stone-300 pb-8 md:flex-row md:items-end">
+        <div>
+          <p className="eyebrow text-terracotta">Workspace archive</p>
+          <h1 className="mt-3 font-serif text-5xl font-black md:text-7xl">
+            Asset Library
+          </h1>
+          <p className="page-lede mt-3">
+            Ready images available to your active organization. Reuse them in
+            Studio or inspect their generation history.
+          </p>
+        </div>
+        <Button asChild>
+          <Link href="/studio">Upload in Studio</Link>
+        </Button>
+      </header>
+      <div
+        className="mt-8 flex flex-wrap gap-2"
+        role="group"
+        aria-label="Filter assets"
+      >
+        {(['ALL', 'PERSON', 'GARMENT', 'GENERATED'] as const).map((value) => (
+          <button
+            key={value}
+            onClick={() => {
+              setFilter(value);
+              setCursor(null);
+            }}
+            aria-pressed={filter === value}
+            className={`rounded-lg px-4 py-2 text-xs font-bold ${filter === value ? 'bg-stone-950 text-white' : 'border border-stone-300 bg-white/60'}`}
+          >
+            {humanizeEnum(value)}
+          </button>
+        ))}
+      </div>
+      {error && (
+        <p
+          role="alert"
+          className="mt-6 border border-red-300 bg-red-50 p-4 text-sm text-red-800"
+        >
+          {error}
+        </p>
+      )}
+      {loading ? (
+        <div className="mt-8 grid grid-cols-1 gap-4 min-[420px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+          {Array.from({ length: 8 }, (_, i) => (
+            <div
+              key={i}
+              className="aspect-[4/5] animate-pulse rounded-xl bg-stone-200"
+            />
+          ))}
+        </div>
+      ) : assets.length === 0 ? (
+        <section className="mt-10 grid min-h-80 place-items-center rounded-xl border border-dashed border-stone-400 text-center">
+          <div>
+            <Images className="mx-auto text-terracotta" />
+            <h2 className="mt-4 font-serif text-3xl">No assets here yet</h2>
+            <p className="mt-2 text-sm text-stone-500">
+              Your uploaded and generated images will appear here.
+            </p>
+            <Button asChild className="mt-6">
+              <Link href="/studio">Go to Studio</Link>
+            </Button>
+          </div>
+        </section>
+      ) : (
+        <div className="mt-8 grid grid-cols-1 gap-4 min-[420px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+          {assets.map((asset) => (
+            <article
+              key={asset.id}
+              className="group overflow-hidden rounded-xl border border-stone-300 bg-[#f8f5ee] transition duration-300 hover:border-stone-500 hover:shadow-[0_16px_40px_rgba(45,38,31,.08)]"
+            >
+              <div className="relative aspect-[4/5] overflow-hidden">
+                <SecureAssetImage
+                  assetId={asset.id}
+                  alt={asset.originalFileName}
+                  className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.02]"
+                />
+                <span className="status-badge absolute left-3 top-3 border-0 bg-stone-950/85 text-white">
+                  {humanizeEnum(asset.source ?? 'UPLOADED')}
+                </span>
+              </div>
+              <div className="p-3.5">
+                <p
+                  className="truncate text-sm font-bold"
+                  title={asset.originalFileName}
+                >
+                  {assetDisplayName(asset.originalFileName, asset.source)}
+                </p>
+                <p className="mt-1 text-[10px] text-stone-500">
+                  {asset.mimeType.replace('image/', '').toUpperCase()} ·{' '}
+                  {asset.width && asset.height
+                    ? `${asset.width}×${asset.height} · `
+                    : ''}
+                  {new Date(asset.createdAt).toLocaleDateString()}
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Button asChild className="h-8 px-2 text-[10px]">
+                    <Link href={`/studio?person=${asset.id}`}>
+                      Use as Person
+                    </Link>
+                  </Button>
+                  <Button
+                    asChild
+                    variant="outline"
+                    className="h-8 px-2 text-[10px]"
+                  >
+                    <Link href={`/studio?garment=${asset.id}`}>
+                      Use as Garment
+                    </Link>
+                  </Button>
+                  <button
+                    onClick={() => void open(asset)}
+                    className="rounded-md py-2 text-xs font-bold hover:bg-stone-100"
+                  >
+                    Open
+                  </button>
+                  <button
+                    onClick={() => setDeleting(asset)}
+                    className="flex items-center justify-center gap-1 rounded-md py-2 text-xs font-bold text-red-800 hover:bg-red-50"
+                  >
+                    <Trash2 size={13} /> Delete
+                  </button>
+                </div>
+                {asset.generationId && (
+                  <Link
+                    href={`/generations/${asset.generationId}`}
+                    className="mt-3 block text-center text-[10px] font-bold uppercase tracking-wider text-terracotta"
+                  >
+                    View generation
+                  </Link>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+      <div className="mt-10 flex justify-between">
+        <Button
+          variant="outline"
+          disabled={!cursor}
+          onClick={() => setCursor(null)}
+        >
+          First page
+        </Button>
+        <Button disabled={!nextCursor} onClick={() => setCursor(nextCursor)}>
+          Next page
+        </Button>
+      </div>
+      {deleting && (
+        <div
+          className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-asset-title"
+        >
+          <div className="w-full max-w-md rounded-xl bg-[#f8f5ee] p-7">
+            <h2 id="delete-asset-title" className="font-serif text-3xl">
+              Delete this asset?
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-stone-600">
+              This removes the stored image. Assets used in generation history
+              are protected.
+            </p>
+            <div className="mt-7 flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setDeleting(null)}>
+                Keep asset
+              </Button>
+              <Button variant="danger" onClick={() => void remove()}>
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
 }
